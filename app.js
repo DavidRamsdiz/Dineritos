@@ -1516,7 +1516,7 @@ var D=window.DIN,U=window.DINV1,U2=window.DINV2,V=D.V;
 var e=D.esc,eur=D.eur,eur0=D.eur0,cap=D.cap,n0=D.n0;
 var kpi=U.kpi,regla=U.regla,num2=U.num2;
 
-var VERSION="afa5ff3";
+var VERSION="0c760f2";
 var LSK="dineritos.estado.v2";     /* el estado de trabajo */
 var LSC="dineritos.cuenta.v2";     /* clientId, sesion y fichero elegido */
 var LSB="dineritos.base.v2";       /* copia de lo ultimo leido del Excel */
@@ -1528,7 +1528,7 @@ var C={clientId:"",token:"",exp:0,refresh:"",cuenta:"",drive:"",item:"",nombre:"
        etag:"",leido:null};
 var BASE=null;        /* estado tal y como estaba en el Excel al leerlo */
 var OCUPADO="";       /* texto de la operacion en curso */
-var BUSCADOS=null;    /* resultados de la busqueda de fichero */
+var NAV={modo:"carpeta",ruta:[],carpetas:[],archivos:[],aviso:""};  /* explorador de OneDrive */
 
 /* ---------------------------------------------------------------- almacen */
 function cargarLocal(){
@@ -1667,12 +1667,59 @@ function g(ruta,opts){
 }
 function ruta(){return "/drives/"+encodeURIComponent(C.drive)+"/items/"+encodeURIComponent(C.item);}
 
+var CAMPOS="id,name,folder,file,parentReference,lastModifiedDateTime,size";
+function esLibro(x){return !x.folder&&/\.xls[xm]$/i.test(x.name||"");}
+function reparte(items,aviso){
+  NAV.carpetas=items.filter(function(x){return !!x.folder;});
+  NAV.archivos=items.filter(esLibro);
+  NAV.aviso=aviso||"";
+  return NAV;
+}
+/* El explorador no depende del indice de busqueda, que tarda en ver un archivo
+   recien subido. Es la via fiable. */
+function verCarpeta(itemId,nombre){
+  var url=itemId?("/me/drive/items/"+encodeURIComponent(itemId)+"/children")
+                :"/me/drive/root/children";
+  return g(url+"?$top=200&$select="+CAMPOS).then(function(j){
+    NAV.modo="carpeta";
+    if(itemId===null)NAV.ruta=[];
+    else if(nombre!==undefined)NAV.ruta=NAV.ruta.concat([{id:itemId,nombre:nombre}]);
+    var items=(j&&j.value)||[];
+    items.sort(function(a,b){return String(a.name||"").localeCompare(String(b.name||""),"es");});
+    return reparte(items,items.length>=200?"Solo muestro los 200 primeros de esta carpeta.":"");
+  });
+}
+function subirNivel(indice){
+  /* indice -1 = raiz; si no, hasta esa miga */
+  if(indice<0){NAV.ruta=[];return verCarpeta(null);}
+  var destino=NAV.ruta[indice];
+  NAV.ruta=NAV.ruta.slice(0,indice+1);
+  return g("/me/drive/items/"+encodeURIComponent(destino.id)+"/children?$top=200&$select="+CAMPOS)
+   .then(function(j){
+     NAV.modo="carpeta";
+     var items=(j&&j.value)||[];
+     items.sort(function(a,b){return String(a.name||"").localeCompare(String(b.name||""),"es");});
+     return reparte(items,"");
+   });
+}
+function verRecientes(){
+  return g("/me/drive/recent?$top=50").then(function(j){
+    NAV.modo="recientes";NAV.ruta=[];
+    var items=((j&&j.value)||[]).filter(function(x){return !x.folder;});
+    return reparte(items,"Lo que has abierto o subido últimamente. Aquí sí aparece un archivo "+
+      "recién subido, aunque la búsqueda todavía no lo vea.");
+  });
+}
 function buscarLibro(q){
   var t=q.replace(/'/g,"''");
-  return g("/me/drive/root/search(q='"+encodeURIComponent(t)+"')?$top=25"+
-    "&$select=id,name,parentReference,lastModifiedDateTime,size")
+  return g("/me/drive/root/search(q='"+encodeURIComponent(t)+"')?$top=200&$select="+CAMPOS)
    .then(function(j){
-     return (j&&j.value||[]).filter(function(x){return /\.xlsx$/i.test(x.name||"");});
+     NAV.modo="busqueda";NAV.ruta=[];
+     var todos=(j&&j.value)||[];
+     var libros=todos.filter(esLibro);
+     return reparte(todos, libros.length?"":
+       "La búsqueda no ha encontrado ningún .xlsx con ese nombre. Si acabas de subir el archivo, "+
+       "el índice de OneDrive tarda un rato: úsalo desde «Mi OneDrive» o «Recientes».");
    });
 }
 function metadatos(){
@@ -1983,27 +2030,49 @@ function tarjetaCuenta(){
     return h;
   }
   if(!C.item){
-    h+='<p class="hint" style="margin-bottom:12px">Ahora dime qué libro es. Busca por su nombre:</p>'+
-      '<form class="quickadd" data-act="buscar" style="grid-template-columns:1fr auto">'+
-      '<div class="field"><label>Nombre del archivo</label>'+
+    var migas='<button class="btn btn-sm" data-act="nav-raiz">Mi OneDrive</button>'+
+      NAV.ruta.map(function(m,i){
+        return ' <span class="hint-sm">/</span> <button class="btn btn-sm" data-act="nav-miga" data-i="'+i+'">'+
+          e(m.nombre)+'</button>';
+      }).join("");
+
+    h+='<p class="hint" style="margin-bottom:12px">Dime cuál es tu libro. Puedes navegar por tus '+
+      'carpetas, mirar los recientes o buscarlo por nombre.</p>'+
+      '<div class="nav" style="flex-wrap:wrap;gap:6px;margin-bottom:12px">'+migas+
+      ' <button class="btn btn-sm'+(NAV.modo==="recientes"?" btn-primary":"")+
+      '" data-act="nav-recientes">Recientes</button></div>'+
+      '<form class="quickadd" data-act="buscar" style="grid-template-columns:1fr auto;margin-bottom:4px">'+
+      '<div class="field"><label>Buscar por nombre</label>'+
       '<input class="inp" name="q" value="Dineritos" autocomplete="off"></div>'+
-      '<div class="field"><label>&nbsp;</label><button class="btn btn-primary" type="submit">Buscar</button></div>'+
+      '<div class="field"><label>&nbsp;</label><button class="btn" type="submit">Buscar</button></div>'+
       '</form>';
-    if(BUSCADOS&&BUSCADOS.length){
-      h+='<div class="tw" style="margin-top:14px"><table class="t mid"><thead><tr><th>Archivo</th>'+
-        '<th>Carpeta</th><th class="n">Modificado</th><th></th></tr></thead><tbody>'+
-        BUSCADOS.map(function(f,i){
-          var car=(f.parentReference&&f.parentReference.path||"").replace(/^\/drive\/root:?\/?/,"")||"raíz";
-          return '<tr><td class="c-name">'+e(f.name)+'</td><td class="hint-sm">'+e(car)+'</td>'+
-            '<td class="n hint-sm">'+e((f.lastModifiedDateTime||"").slice(0,10))+'</td>'+
-            '<td><button class="btn btn-sm btn-primary" data-act="elegir" data-i="'+i+'">Es este</button></td></tr>';
-        }).join("")+'</tbody></table></div>';
-    }else if(BUSCADOS){
-      h+='<p class="hint" style="margin-top:12px">No he encontrado ningún .xlsx con ese nombre en tu OneDrive.</p>';
-    }
-    h+='<hr class="divider"><button class="btn btn-quiet btn-sm" data-act="salir">Cerrar sesión</button></div>';
+
+    if(NAV.aviso)h+='<div class="note note-warn" style="margin-top:10px"><span class="ic">!</span><div>'+
+      e(NAV.aviso)+'</div></div>';
+
+    var filas="";
+    NAV.carpetas.forEach(function(f){
+      filas+='<tr><td class="c-name"><button class="btn btn-sm btn-quiet" data-act="nav-carpeta" '+
+        'data-id="'+e(f.id)+'" data-nombre="'+e(f.name)+'">📁 '+e(f.name)+'</button></td>'+
+        '<td class="hint-sm">carpeta</td><td></td></tr>';
+    });
+    NAV.archivos.forEach(function(f,i){
+      var car=(f.parentReference&&f.parentReference.path||"")
+        .replace(/^\/drive\/root:?\/?/,"").replace(/^\/drives\/[^/]+\/root:?\/?/,"");
+      filas+='<tr><td class="c-name">'+e(f.name)+
+        (car?'<small>'+e(car)+'</small>':'')+'</td>'+
+        '<td class="hint-sm">'+e((f.lastModifiedDateTime||"").slice(0,10))+'</td>'+
+        '<td><button class="btn btn-sm btn-primary" data-act="elegir" data-i="'+i+'">Es este</button></td></tr>';
+    });
+    if(filas)h+='<div class="tw" style="margin-top:12px"><table class="t"><tbody>'+filas+'</tbody></table></div>';
+    else h+='<p class="hint" style="margin-top:12px">Aquí no hay carpetas ni hojas de cálculo.</p>';
+
+    h+='<p class="hint-sm" style="margin-top:10px">Solo te enseño carpetas y archivos .xlsx / .xlsm; '+
+      'el resto lo escondo para no estorbar.</p>'+
+      '<hr class="divider"><button class="btn btn-quiet btn-sm" data-act="salir">Cerrar sesión</button></div>';
     return h;
   }
+
   var cuando=C.leido?new Date(C.leido).toLocaleString("es-ES"):"nunca";
   h+='<div class="tw"><table class="t"><tbody>'+
     '<tr><td class="c-name">Libro<small>en tu OneDrive</small></td><td class="n">'+e(C.nombre||"—")+'</td></tr>'+
@@ -2169,7 +2238,7 @@ window.DINPWA={
   entrar:entrar,salir:salir,procesarVuelta:procesarVuelta,buscarLibro:buscarLibro,
   leerExcel:leerExcel,guardarEnExcel:guardarEnExcel,importarLocal:importarLocal,
   ocupar:ocupar,pendientes:pendientes,conectado:conectado,listo:listo,
-  cuenta:C,ponBuscados:function(x){BUSCADOS=x;},dameBuscados:function(){return BUSCADOS;},
+  cuenta:C,nav:NAV,verCarpeta:verCarpeta,subirNivel:subirNivel,verRecientes:verRecientes,
   simular:simular,planEscritura:planEscritura
 };
 })();
@@ -2272,13 +2341,17 @@ function onClick(ev){
       P.cuenta.clientId="";P.guardarCuenta();pintar();break;
     case "otro-libro":
       P.cuenta.item="";P.cuenta.drive="";P.cuenta.nombre="";P.cuenta.etag="";
-      P.ponBuscados(null);P.guardarCuenta();pintar();break;
+      P.guardarCuenta();
+      P.ocupar("Abriendo tu OneDrive…");
+      P.verCarpeta(null).then(function(){P.ocupar("");},function(err){
+        P.ocupar("");aviso("No he podido listar tu OneDrive: "+((err&&err.message)||""));});
+      break;
     case "elegir":
-      var lst2=P.dameBuscados()||[],f2=lst2[i];
+      var f2=(P.nav.archivos||[])[i];
       if(!f2)break;
       P.cuenta.drive=(f2.parentReference&&f2.parentReference.driveId)||"";
       P.cuenta.item=f2.id;P.cuenta.nombre=f2.name;P.cuenta.etag="";
-      P.ponBuscados(null);P.guardarCuenta();
+      P.guardarCuenta();
       if(!P.cuenta.drive){aviso("Ese resultado no trae identificador de unidad; prueba con otra búsqueda.");pintar();break;}
       P.ocupar("Leyendo el Excel…");
       P.leerExcel().then(function(st){
@@ -2287,6 +2360,27 @@ function onClick(ev){
       },function(err){
         P.ocupar("");aviso("No he podido leerlo: "+((err&&err.message)||""));
       });
+      break;
+    case "nav-raiz":
+      P.ocupar("Abriendo…");
+      P.verCarpeta(null).then(function(){P.ocupar("");},function(err){
+        P.ocupar("");aviso("No he podido abrir la carpeta: "+((err&&err.message)||""));});
+      break;
+    case "nav-carpeta":
+      P.ocupar("Abriendo…");
+      P.verCarpeta(t.getAttribute("data-id"),t.getAttribute("data-nombre"))
+       .then(function(){P.ocupar("");},function(err){
+         P.ocupar("");aviso("No he podido abrir la carpeta: "+((err&&err.message)||""));});
+      break;
+    case "nav-miga":
+      P.ocupar("Abriendo…");
+      P.subirNivel(i).then(function(){P.ocupar("");},function(err){
+        P.ocupar("");aviso("No he podido abrir la carpeta: "+((err&&err.message)||""));});
+      break;
+    case "nav-recientes":
+      P.ocupar("Buscando los recientes…");
+      P.verRecientes().then(function(){P.ocupar("");},function(err){
+        P.ocupar("");aviso("No he podido ver los recientes: "+((err&&err.message)||""));});
       break;
     case "simular": P.simular();break;
     case "guardar-excel": cerrarHoja();P.guardarEnExcel(false);break;
@@ -2412,8 +2506,8 @@ function onSubmit(ev){
     var q=String(new FormData(t).get("q")||"").trim();
     if(!q)return;
     P.ocupar("Buscando…");
-    P.buscarLibro(q).then(function(lst){
-      P.ponBuscados(lst);P.ocupar("");
+    P.buscarLibro(q).then(function(){
+      P.ocupar("");
     },function(err){
       P.ocupar("");aviso("La búsqueda ha fallado: "+((err&&err.message)||""));
     });
@@ -2492,6 +2586,10 @@ function arrancar(){
         });
       }
       aviso("Conectado"+(P.cuenta.cuenta?" como "+P.cuenta.cuenta:"")+".");
+      if(!P.cuenta.item){
+        P.ocupar("Abriendo tu OneDrive…");
+        return P.verCarpeta(null).then(function(){P.ocupar("");},function(){P.ocupar("");});
+      }
       pintar();
       return;
     }

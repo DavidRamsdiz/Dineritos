@@ -1,10 +1,10 @@
-/* Dineritos afa5ff3
+/* Dineritos 0c760f2
    Estrategia: para el armazon (pagina y app.js) se pide SIEMPRE a la red y la copia
    local es solo el respaldo de cuando no hay conexion. Asi un arreglo llega al
    dispositivo en la siguiente carga en vez de quedarse con la version vieja.
    Para los iconos y el manifiesto, al contrario: primero la copia local. */
-var CACHE = "dineritos-afa5ff3";
-var SHELL = ["./", "./index.html", "./app.js?v=afa5ff3", "./manifest.webmanifest",
+var CACHE = "dineritos-0c760f2";
+var SHELL = ["./", "./index.html", "./app.js?v=0c760f2", "./manifest.webmanifest",
              "./icon-192.png", "./icon-512.png"];
 var ARMAZON = /(\/|index\.html|app\.js)$/;
 

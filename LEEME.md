@@ -113,7 +113,11 @@ Puedes dejar el original en la carpeta de trabajo como archivo histórico: la ap
 1. Abre tu dirección (`https://TUUSUARIO.github.io/dineritos/`) en el móvil.
 2. Pestaña **Ajustes** → pega el **Id. de aplicación** → **Entrar con Microsoft** → acepta los
    permisos que te pida.
-3. Busca `Dineritos` y pulsa **Es este** en el libro correcto. La app lo lee y ya tienes todo.
+3. Se abre tu OneDrive. Navega por las carpetas (o pulsa **Recientes**) hasta encontrar
+   `Dineritos Pro.xlsx` y pulsa **Es este**. La app lo lee y ya tienes todo.
+   > El buscador por nombre también está, pero es menos fiable: el índice de OneDrive tarda un
+   > rato en ver un archivo recién subido. Si buscando no aparece, navega por carpetas o mira
+   > en Recientes, que van directos y siempre lo encuentran.
 4. En el navegador del móvil: **Compartir → Añadir a pantalla de inicio**. Queda como una app
    más y arranca a pantalla completa.
 
@@ -222,4 +226,5 @@ Chrome → ⋮ → Configuración → Configuración de sitios → Todos los sit
 | No aparece «Añadir a pantalla de inicio» | La dirección no es `https://`, o falta `manifest.webmanifest`. |
 | En el móvil se comporta como una versión antigua | Compara el `Versión` del pie en los dos dispositivos. Cierra la app y reábrela. |
 | «Se ha perdido el hilo del login» | La vuelta del login aterrizó en otro sitio. Haz el primer login desde el navegador, no desde el icono de la pantalla de inicio. |
+| El buscador no encuentra tu Excel | El índice de OneDrive va con retraso. Usa **Recientes** o navega por carpetas. |
 | Excel se queja al guardar | Tienes el libro abierto en el ordenador. Ciérralo. |
