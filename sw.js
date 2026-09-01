@@ -1,5 +1,5 @@
 /* Dineritos: cache del armazon para que la app abra sin conexion. */
-var CACHE = "dineritos-v10503";
+var CACHE = "dineritos-v66492";
 var SHELL = ["./", "./index.html", "./app.js", "./manifest.webmanifest",
              "./icon-192.png", "./icon-512.png"];
 

@@ -33,27 +33,64 @@ forma. Lo más fácil es GitHub Pages, que es gratis.
 
 ## 2. Registrar la app en Microsoft
 
-Esto es lo que le da permiso para tocar tu OneDrive.
+Esto es lo que le da permiso para tocar tu OneDrive. Lo único que necesitas de aquí es un
+**Id. de aplicación (Client ID)**.
 
-1. Ve a [portal.azure.com](https://portal.azure.com) y entra con **tu cuenta personal de
-   Microsoft** (la misma donde vas a poner el Excel).
-2. Busca arriba **Microsoft Entra ID** → en el menú izquierdo, **Registros de aplicaciones**
-   (*App registrations*) → **Nuevo registro**.
-3. Rellena:
+> ### Antes de empezar: necesitas un «directorio»
+> Si entras en el portal de Azure con tu cuenta personal sin más, te sale este error:
+> *«AADSTS16000: User account from identity provider 'live.com' does not exist in tenant
+> 'Microsoft Services'»*.
+> No es culpa tuya: a las cuentas personales Microsoft las mete en un tenant compartido que **no
+> tiene directorio**, y sin directorio no se puede registrar nada. Hay que resolver eso primero,
+> y tienes dos caminos.
+
+### Camino A — Tu propio directorio gratis (recomendado)
+
+Es el que te deja completamente independiente: la app es tuya y no depende de nadie.
+
+1. Ve a [azure.microsoft.com/es-es/free](https://azure.microsoft.com/es-es/free) y regístrate con
+   **tu cuenta personal de Microsoft**.
+2. Te pedirá teléfono y una tarjeta. **Es solo verificación de identidad, no se cobra nada**: los
+   registros de aplicaciones entran en el nivel gratuito de Entra ID y son gratis siempre. Si te
+   incomoda, mira el camino B.
+3. Al terminar tendrás tu propio directorio y serás su administrador.
+4. Entra en [entra.microsoft.com](https://entra.microsoft.com) → **Aplicaciones** → **Registros de
+   aplicaciones** → **Nuevo registro**.
+5. Rellena:
    - **Nombre**: `Dineritos`
    - **Tipos de cuenta compatibles**: **Solo cuentas personales de Microsoft**
-   - **URI de redirección**: elige la plataforma **Aplicación de una sola página (SPA)** y pega
-     tu dirección del paso 1, tal cual, con la barra final:
-     `https://TUUSUARIO.github.io/dineritos/`
-4. **Registrar**.
-5. En la pantalla *Información general*, copia el **Id. de aplicación (cliente)**. Son 36
-   caracteres con guiones, del estilo `a1b2c3d4-1111-2222-3333-abcdef123456`.
-6. **No crees ningún secreto de cliente.** Las apps de navegador no lo usan (van con PKCE), y
-   por eso el Id. de aplicación no es información sensible.
-7. En **Permisos de API**, añade de *Microsoft Graph → Permisos delegados*: **`Files.ReadWrite`**.
-   Con cuenta personal no hace falta que lo apruebe ningún administrador: te lo preguntará a ti
-   la primera vez que entres. (Con eso basta: la app solo usa lectura y escritura de archivos,
-   no la API de Excel.)
+   - **URI de redirección**: plataforma **Aplicación de una sola página (SPA)** y tu dirección del
+     paso 1, tal cual, con la barra final: `https://TUUSUARIO.github.io/dineritos/`
+6. **Registrar** → copia el **Id. de aplicación (cliente)**.
+
+### Camino B — Registrarla en el directorio de Exus (sin tarjeta)
+
+Funciona porque **el directorio donde se registra la app no tiene que ser el de quien la usa**:
+registras la app en Exus, pero luego entras en ella con tu cuenta personal y lee tu OneDrive
+personal. Los datos no pasan por Exus en ningún momento.
+
+1. Entra en [entra.microsoft.com](https://entra.microsoft.com) con tu **cuenta de trabajo**.
+2. **Aplicaciones** → **Registros de aplicaciones** → **Nuevo registro**.
+3. Igual que arriba, pero en **Tipos de cuenta compatibles** elige
+   **«Cuentas en cualquier directorio de organización y cuentas personales de Microsoft»**.
+4. Copia el **Id. de aplicación (cliente)**.
+
+Dos avisos honestos sobre este camino:
+
+- Si Exus tiene desactivado que los usuarios registren aplicaciones, el botón te dará error. Lo
+  sabrás en diez segundos.
+- El registro es un objeto del directorio de tu empresa: IT lo puede ver y borrar, y desaparece el
+  día que te vayas. Además, montar una app personal en el directorio corporativo puede chocar con
+  la política interna. Si te da reparo, ve al camino A.
+
+### En los dos casos
+
+- **No crees ningún secreto de cliente.** Las apps de navegador no lo usan (van con PKCE), y por
+  eso el Id. de aplicación no es información sensible.
+- En **Permisos de API**, añade de *Microsoft Graph → Permisos delegados*: **`Files.ReadWrite`**.
+  Con cuenta personal no hace falta que lo apruebe ningún administrador: el permiso lo das tú
+  sobre tu propio OneDrive la primera vez que entres. (Con eso basta: la app solo usa lectura y
+  escritura de archivos, no la API de Excel.)
 
 > Si prefieres el permiso mínimo posible, puedes usar `Files.ReadWrite.AppFolder` en lugar de
 > `Files.ReadWrite`, pero entonces el Excel tiene que vivir dentro de la carpeta que Microsoft
@@ -172,7 +209,8 @@ actualiza solo en la siguiente visita.
 | Síntoma | Causa casi siempre |
 |---|---|
 | «La vuelta del login no cuadra» | La URI de redirección registrada no coincide *exactamente*. Repasa la barra final. |
-| El login abre y vuelve sin entrar | El registro no es de tipo **SPA**, o no es «solo cuentas personales». |
+| El login abre y vuelve sin entrar | El registro no es de tipo **SPA**, o los tipos de cuenta no admiten cuentas personales. |
+| `AADSTS16000 ... tenant 'Microsoft Services'` al entrar en el portal | Tu cuenta personal no tiene directorio. Es el paso 2: camino A o camino B. |
 | «No he podido descargar el libro» | Falta el permiso `Files.ReadWrite`, o el libro se movió. Prueba *Elegir otro libro*. |
 | No aparece «Añadir a pantalla de inicio» | La dirección no es `https://`, o falta `manifest.webmanifest`. |
 | Excel se queja al guardar | Tienes el libro abierto en el ordenador. Ciérralo. |

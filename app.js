@@ -1535,10 +1535,10 @@ function cargarLocal(){
     var c=JSON.parse(localStorage.getItem(LSC)||"null");
     if(c)for(var k in c)if(k in C)C[k]=c[k];
   }catch(x){}
-  try{
-    var s=JSON.parse(localStorage.getItem(LSK)||"null");
-    if(s&&s.meses)D.S=s;
-  }catch(x){}
+  var s=null;
+  try{s=JSON.parse(localStorage.getItem(LSK)||"null");}catch(x){}
+  /* El estado nunca puede quedarse en null: las vistas leen S.config directamente */
+  D.S=(s&&s.meses)?s:D.estadoVacio();
   try{BASE=JSON.parse(localStorage.getItem(LSB)||"null");}catch(x){BASE=null;}
 }
 function guardarCuenta(){try{localStorage.setItem(LSC,JSON.stringify(C));}catch(x){}}
@@ -2076,7 +2076,12 @@ function estadoSync(){
 }
 function pintar(){
   var raiz=document.getElementById("root"),cuerpo;
-  if(!D.hayDatos())cuerpo=vistaInicio();
+  /* Ajustes tiene que ser accesible ANTES de tener datos: es donde se pone el
+     Id. de aplicacion y se conecta la cuenta. */
+  var arranque=(!D.hayDatos()&&V.tab==="ajustes");
+  if(arranque)cuerpo='<button class="btn btn-sm btn-quiet" data-act="tab" data-tab="mes"'+
+    ' style="margin-top:16px">‹ Volver</button>'+U2.vistaAjustes();
+  else if(!D.hayDatos())cuerpo=vistaInicio();
   else if(V.tab==="anio")cuerpo=U.vistaAnio();
   else if(V.tab==="reparto")cuerpo=U2.vistaReparto();
   else if(V.tab==="anuales")cuerpo=U2.vistaAnuales();
