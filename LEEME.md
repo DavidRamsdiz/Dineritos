@@ -195,8 +195,13 @@ está bien visto.
 
 ## Actualizar la app
 
-Sube de nuevo `app.js` e `index.html` al repositorio y refresca. El *service worker* se
-actualiza solo en la siguiente visita.
+Sube de nuevo `app.js` y `sw.js` al repositorio y refresca. Mientras haya conexión, la app pide
+siempre la última versión a la red, así que llega sola en la siguiente carga.
+
+**Para saber qué versión tiene cada dispositivo**, mira el final de la pantalla: pone
+`Versión` y siete caracteres. Si el móvil y el ordenador muestran códigos distintos, uno de los dos
+se ha quedado atrás: cierra la app del todo y vuelve a abrirla. En Android, si se resiste:
+Ajustes de Chrome → Configuración de sitios → tu dirección → *Borrar datos*.
 
 ## Copias de seguridad
 
@@ -213,4 +218,6 @@ actualiza solo en la siguiente visita.
 | `AADSTS16000 ... tenant 'Microsoft Services'` al entrar en el portal | Tu cuenta personal no tiene directorio. Es el paso 2: camino A o camino B. |
 | «No he podido descargar el libro» | Falta el permiso `Files.ReadWrite`, o el libro se movió. Prueba *Elegir otro libro*. |
 | No aparece «Añadir a pantalla de inicio» | La dirección no es `https://`, o falta `manifest.webmanifest`. |
+| En el móvil se comporta como una versión antigua | Compara el `Versión` del pie en los dos dispositivos. Cierra la app y reábrela. |
+| «Se ha perdido el hilo del login» | La vuelta del login aterrizó en otro sitio. Haz el primer login desde el navegador, no desde el icono de la pantalla de inicio. |
 | Excel se queja al guardar | Tienes el libro abierto en el ordenador. Ciérralo. |

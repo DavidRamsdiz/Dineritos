@@ -1,7 +1,12 @@
-/* Dineritos: cache del armazon para que la app abra sin conexion. */
-var CACHE = "dineritos-v66492";
+/* Dineritos 7d8033d
+   Estrategia: para el armazon (pagina y app.js) se pide SIEMPRE a la red y la copia
+   local es solo el respaldo de cuando no hay conexion. Asi un arreglo llega al
+   dispositivo en la siguiente carga en vez de quedarse con la version vieja.
+   Para los iconos y el manifiesto, al contrario: primero la copia local. */
+var CACHE = "dineritos-7d8033d";
 var SHELL = ["./", "./index.html", "./app.js", "./manifest.webmanifest",
              "./icon-192.png", "./icon-512.png"];
+var ARMAZON = /(\/|index\.html|app\.js)$/;
 
 self.addEventListener("install", function (ev) {
   ev.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(SHELL); })
@@ -14,24 +19,34 @@ self.addEventListener("activate", function (ev) {
 });
 self.addEventListener("fetch", function (ev) {
   var u = new URL(ev.request.url);
-  /* Graph, el login de Microsoft y las fuentes van siempre a la red. */
+  /* Graph, el login de Microsoft y las fuentes van siempre a la red, sin tocar la cache. */
   if (ev.request.method !== "GET" || u.origin !== location.origin) return;
-  ev.respondWith(
-    caches.match(ev.request).then(function (hit) {
-      if (hit) {
-        /* refresco en segundo plano para no quedarse con una version vieja */
-        fetch(ev.request).then(function (res) {
-          if (res && res.ok) caches.open(CACHE).then(function (c) { c.put(ev.request, res); });
-        }).catch(function () {});
-        return hit;
-      }
-      return fetch(ev.request).then(function (res) {
+
+  if (ARMAZON.test(u.pathname)) {
+    ev.respondWith(
+      fetch(ev.request).then(function (res) {
         if (res && res.ok) {
           var cp = res.clone();
           caches.open(CACHE).then(function (c) { c.put(ev.request, cp); });
         }
         return res;
-      }).catch(function () { return caches.match("./index.html"); });
+      }).catch(function () {
+        return caches.match(ev.request).then(function (hit) {
+          return hit || caches.match("./index.html");
+        });
+      })
+    );
+    return;
+  }
+  ev.respondWith(
+    caches.match(ev.request).then(function (hit) {
+      return hit || fetch(ev.request).then(function (res) {
+        if (res && res.ok) {
+          var cp = res.clone();
+          caches.open(CACHE).then(function (c) { c.put(ev.request, cp); });
+        }
+        return res;
+      });
     })
   );
 });

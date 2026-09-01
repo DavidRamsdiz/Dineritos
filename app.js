@@ -1516,6 +1516,7 @@ var D=window.DIN,U=window.DINV1,U2=window.DINV2,V=D.V;
 var e=D.esc,eur=D.eur,eur0=D.eur0,cap=D.cap,n0=D.n0;
 var kpi=U.kpi,regla=U.regla,num2=U.num2;
 
+var VERSION="7d8033d";
 var LSK="dineritos.estado.v2";     /* el estado de trabajo */
 var LSC="dineritos.cuenta.v2";     /* clientId, sesion y fichero elegido */
 var LSB="dineritos.base.v2";       /* copia de lo ultimo leido del Excel */
@@ -1567,9 +1568,11 @@ function entrar(){
   if(!crypto.subtle){aviso("El navegador necesita HTTPS para iniciar sesión. Abre la app por su dirección https.");return;}
   var ver=aleatorio(48),est=aleatorio(16);
   try{
-    sessionStorage.setItem("din.pkce",ver);
-    sessionStorage.setItem("din.estado",est);
-  }catch(x){aviso("No puedo guardar la sesión: ¿estás en modo incógnito?");return;}
+    /* en localStorage y no en sessionStorage: en el movil la vuelta del login
+       puede aterrizar en otra pestana o incluso en otro navegador */
+    localStorage.setItem("din.pkce",ver);
+    localStorage.setItem("din.estado",est);
+  }catch(x){aviso("No puedo guardar la sesión: ¿estás en modo privado?");return;}
   sha256(ver).then(function(h){
     location.href=AUT+"/authorize?client_id="+encodeURIComponent(C.clientId)+
       "&response_type=code&redirect_uri="+encodeURIComponent(volverA())+
@@ -1620,12 +1623,14 @@ function procesarVuelta(){
   if(!code)return Promise.resolve(null);
   var est=q.get("state"),guardado=null,ver=null;
   try{
-    guardado=sessionStorage.getItem("din.estado");
-    ver=sessionStorage.getItem("din.pkce");
-    sessionStorage.removeItem("din.estado");sessionStorage.removeItem("din.pkce");
+    guardado=localStorage.getItem("din.estado");
+    ver=localStorage.getItem("din.pkce");
+    localStorage.removeItem("din.estado");localStorage.removeItem("din.pkce");
   }catch(x){}
   history.replaceState({},"",volverA());
-  if(!ver||est!==guardado)return Promise.resolve({error:"La vuelta del login no cuadra; vuelve a intentarlo."});
+  if(!ver)return Promise.resolve({error:"Se ha perdido el hilo del login. Si abriste la app "+
+    "desde el icono de la pantalla de inicio, prueba a entrar la primera vez desde el navegador."});
+  if(est!==guardado)return Promise.resolve({error:"La vuelta del login no cuadra; inténtalo otra vez."});
   return pedirToken({client_id:C.clientId,grant_type:"authorization_code",code:code,
     redirect_uri:volverA(),code_verifier:ver,scope:SCOPES})
    .then(function(){return {ok:true};},function(err){return {error:err.message};});
@@ -2027,6 +2032,19 @@ function tarjetaCuenta(){
   return h;
 }
 
+/* Lo que este navegador no puede hacer, dicho antes de que falle algo */
+function problemasNavegador(){
+  var p=[];
+  if(!window.isSecureContext||!(window.crypto&&crypto.subtle))
+    p.push("La página no está en https, así que no puedo iniciar sesión con Microsoft.");
+  if(typeof DecompressionStream==="undefined")
+    p.push("Este navegador no sabe abrir archivos .xlsx. Necesitas Safari 16.4 o posterior, "+
+           "o Chrome actualizado.");
+  try{localStorage.setItem("din.test","1");localStorage.removeItem("din.test");}
+  catch(x){p.push("No puedo guardar nada en este navegador: ¿estás en modo privado?");}
+  return p;
+}
+
 /* ---------------------------------------------------------------- avisos */
 var tT=null;
 function aviso(msg){
@@ -2102,13 +2120,17 @@ function pintar(){
     '<div class="shell">'+(D.hayDatos()?nav("navdesk"):"")+aviso2+cuerpo+
       '<footer class="foot">Tus datos van de este dispositivo a tu Excel de OneDrive y de vuelta. '+
       'Nada pasa por ningún otro servidor.'+
+      '<br>Versión <b>'+VERSION+'</b>'+
       (C.leido?'<br>Última sincronización: '+new Date(C.leido).toLocaleString("es-ES"):'')+
       '</footer></div>'+
     (D.hayDatos()&&V.tab==="mes"?'<button class="fab" data-act="fab">＋ Anotar gasto</button>':'')+
     '<div class="tip" id="tip"></div>';
 }
 function vistaInicio(){
+  var probs=problemasNavegador();
   return '<div class="mespick"><h1>Dineritos</h1></div>'+
+    (probs.length?'<div class="note note-bad" style="margin-bottom:16px"><span class="ic">!</span><div>'+
+      probs.map(function(s){return e(s);}).join("<br>")+'</div></div>':'')+
     '<div class="card card-pad" style="max-width:620px"><p class="hint" style="margin-bottom:16px">'+
     'Lleva tus finanzas con el mismo modelo que tu Excel y escribe en él directamente: '+
     'el reparto proporcional de los gastos comunes, el ahorro que se recalcula para llegar al objetivo del año, '+
