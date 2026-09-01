@@ -1516,7 +1516,7 @@ var D=window.DIN,U=window.DINV1,U2=window.DINV2,V=D.V;
 var e=D.esc,eur=D.eur,eur0=D.eur0,cap=D.cap,n0=D.n0;
 var kpi=U.kpi,regla=U.regla,num2=U.num2;
 
-var VERSION="0c760f2";
+var VERSION="1bteal01";
 var LSK="dineritos.estado.v2";     /* el estado de trabajo */
 var LSC="dineritos.cuenta.v2";     /* clientId, sesion y fichero elegido */
 var LSB="dineritos.base.v2";       /* copia de lo ultimo leido del Excel */
