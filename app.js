@@ -315,13 +315,16 @@ function leerZip(ab){
   var n=dv.getUint16(eo+10,true),p=dv.getUint32(eo+16,true),out={};
   for(var k=0;k<n;k++){
     if(dv.getUint32(p,true)!==0x02014b50)throw new Error("El índice interno del .xlsx está dañado.");
-    var metodo=dv.getUint16(p+10,true),csize=dv.getUint32(p+20,true);
+    var metodo=dv.getUint16(p+10,true),crc=dv.getUint32(p+16,true);
+    var csize=dv.getUint32(p+20,true),usize=dv.getUint32(p+24,true);
     var nl=dv.getUint16(p+28,true),el=dv.getUint16(p+30,true),cl=dv.getUint16(p+32,true);
     var lho=dv.getUint32(p+42,true);
     var nombre=new TextDecoder("utf-8").decode(u8.subarray(p+46,p+46+nl));
     var lnl=dv.getUint16(lho+26,true),lel=dv.getUint16(lho+28,true);
     var ini=lho+30+lnl+lel;
-    out[nombre]={metodo:metodo,raw:u8.slice(ini,ini+csize)};
+    /* crc y usize se guardan para poder recopiar la entrada verbatim al reescribir
+       el libro: asi las partes binarias (imagenes de los dibujos) no se tocan. */
+    out[nombre]={metodo:metodo,raw:u8.slice(ini,ini+csize),crc:crc,usize:usize};
     p+=46+nl+el+cl;
   }
   return out;
@@ -616,10 +619,281 @@ window.DIN={
   mesesOrden:mesesOrden,anios:anios,filasPlan:filasPlan,ahorroPlan:ahorroPlan,
   calcMes:calcMes,serieHucha:serieHucha,huchaSaldoTras:huchaSaldoTras,resumenAnio:resumenAnio,
   abrirXlsx:abrirXlsx,csvApuntes:csvApuntes,csvResumen:csvResumen,tsvMes:tsvMes,
+  leerZip:leerZip,inflar:inflar,
   hayDatos:hayDatos,V:V,
   FILAS_FIJAS:FILAS_FIJAS,AP_INI:19,AP_FIN:37,GA_INI:39,GA_FIN:43,
   get S(){return S;},set S(x){S=x;invalidar();}
 };
+})();
+
+
+/* ===== p8_escritura.js ===== */
+/* ==========================================================================
+   Escritura en el .xlsx desde el navegador.
+
+   La API de Excel de Graph (/workbook/...) NO sirve con OneDrive personal:
+   Microsoft solo la soporta en OneDrive de empresa. Asi que se hace lo mismo
+   que el script de Python: el .xlsx es un ZIP de XML, se cambian SOLO las
+   celdas que toca, se vuelve a empaquetar y se sube.
+
+   Todo lo que no se toca se copia VERBATIM (los mismos bytes ya comprimidos),
+   asi que graficos, dibujos, imagenes, formato condicional y validaciones
+   quedan exactamente igual.
+   ========================================================================== */
+(function(){
+"use strict";
+var D=window.DIN;
+
+/* ---------------------------------------------------------------- CRC32 */
+var TCRC=(function(){
+  var t=new Uint32Array(256);
+  for(var n=0;n<256;n++){
+    var c=n;
+    for(var k=0;k<8;k++)c=(c&1)?(0xEDB88320^(c>>>1)):(c>>>1);
+    t[n]=c>>>0;
+  }
+  return t;
+})();
+function crc32(u8){
+  var c=0xFFFFFFFF;
+  for(var i=0;i<u8.length;i++)c=TCRC[(c^u8[i])&0xFF]^(c>>>8);
+  return (c^0xFFFFFFFF)>>>0;
+}
+
+/* ---------------------------------------------------------------- ZIP */
+function comprimir(u8){
+  if(typeof CompressionStream==="undefined")return Promise.resolve(null);
+  try{
+    var s=new Blob([u8]).stream().pipeThrough(new CompressionStream("deflate-raw"));
+    return new Response(s).arrayBuffer().then(
+      function(b){return new Uint8Array(b);},function(){return null;});
+  }catch(x){return Promise.resolve(null);}
+}
+var DOS_HORA=0,DOS_FECHA=((2020-1980)<<9)|(1<<5)|1;
+
+/* entradas: {nombre: {crudo,metodo,crc,usize} | {bytes:Uint8Array}}
+   Las que llegan con `crudo` se copian tal cual; las que llegan con `bytes`
+   se comprimen aqui. */
+function escribirZip(orden,entradas){
+  var tareas=orden.map(function(nombre){
+    var e=entradas[nombre];
+    if(e.crudo)return Promise.resolve({nombre:nombre,metodo:e.metodo,crc:e.crc,
+      usize:e.usize,cuerpo:e.crudo});
+    var datos=e.bytes;
+    return comprimir(datos).then(function(comp){
+      var usar=comp&&comp.length<datos.length;
+      return {nombre:nombre,metodo:usar?8:0,crc:crc32(datos),usize:datos.length,
+              cuerpo:usar?comp:datos};
+    });
+  });
+  return Promise.all(tareas).then(function(ents){
+    var enc=new TextEncoder(),trozos=[],central=[],offset=0;
+    ents.forEach(function(e){
+      var nom=enc.encode(e.nombre);
+      var lh=new Uint8Array(30+nom.length),dv=new DataView(lh.buffer);
+      dv.setUint32(0,0x04034b50,true);
+      dv.setUint16(4,20,true);dv.setUint16(6,0,true);
+      dv.setUint16(8,e.metodo,true);
+      dv.setUint16(10,DOS_HORA,true);dv.setUint16(12,DOS_FECHA,true);
+      dv.setUint32(14,e.crc,true);
+      dv.setUint32(18,e.cuerpo.length,true);
+      dv.setUint32(22,e.usize,true);
+      dv.setUint16(26,nom.length,true);dv.setUint16(28,0,true);
+      lh.set(nom,30);
+      trozos.push(lh,e.cuerpo);
+
+      var cd=new Uint8Array(46+nom.length),dc=new DataView(cd.buffer);
+      dc.setUint32(0,0x02014b50,true);
+      dc.setUint16(4,20,true);dc.setUint16(6,20,true);dc.setUint16(8,0,true);
+      dc.setUint16(10,e.metodo,true);
+      dc.setUint16(12,DOS_HORA,true);dc.setUint16(14,DOS_FECHA,true);
+      dc.setUint32(16,e.crc,true);
+      dc.setUint32(20,e.cuerpo.length,true);
+      dc.setUint32(24,e.usize,true);
+      dc.setUint16(28,nom.length,true);
+      dc.setUint16(30,0,true);dc.setUint16(32,0,true);
+      dc.setUint16(34,0,true);dc.setUint16(36,0,true);
+      dc.setUint32(38,0,true);
+      dc.setUint32(42,offset,true);
+      cd.set(nom,46);
+      central.push(cd);
+      offset+=lh.length+e.cuerpo.length;
+    });
+    var tamCentral=central.reduce(function(a,b){return a+b.length;},0);
+    var eo=new Uint8Array(22),de=new DataView(eo.buffer);
+    de.setUint32(0,0x06054b50,true);
+    de.setUint16(4,0,true);de.setUint16(6,0,true);
+    de.setUint16(8,ents.length,true);de.setUint16(10,ents.length,true);
+    de.setUint32(12,tamCentral,true);
+    de.setUint32(16,offset,true);
+    de.setUint16(20,0,true);
+    var todo=trozos.concat(central,[eo]);
+    var largo=todo.reduce(function(a,b){return a+b.length;},0);
+    var salida=new Uint8Array(largo),p=0;
+    todo.forEach(function(t){salida.set(t,p);p+=t.length;});
+    return salida;
+  });
+}
+
+/* ---------------------------------------------------------------- celdas */
+function xesc(s){
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+function colNum(s){
+  var n=0;
+  for(var i=0;i<s.length;i++)n=n*26+(s.charCodeAt(i)-64);
+  return n;
+}
+function colStr(n){
+  var s="";
+  while(n>0){var r=(n-1)%26;s=String.fromCharCode(65+r)+s;n=Math.floor((n-1)/26);}
+  return s;
+}
+function celdasDeRango(dir){
+  var m=/^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/.exec(dir);
+  if(!m)return null;
+  var c1=colNum(m[1]),f1=+m[2];
+  var c2=m[3]?colNum(m[3]):c1,f2=m[4]?+m[4]:f1;
+  var filas=[];
+  for(var f=f1;f<=f2;f++){
+    var fila=[];
+    for(var c=c1;c<=c2;c++)fila.push(colStr(c)+f);
+    filas.push(fila);
+  }
+  return filas;
+}
+function localizar(xml,ref){
+  var m=new RegExp('<c r="'+ref+'"(?![0-9])[^>]*/>').exec(xml),txt;
+  if(m)txt=m[0];
+  else{
+    m=new RegExp('<c r="'+ref+'"(?![0-9])[^>]*>[\\s\\S]*?</c>').exec(xml);
+    if(!m)return null;
+    txt=m[0];
+  }
+  var est=/\ss="(\d+)"/.exec(txt);
+  return {ini:m.index,fin:m.index+txt.length,txt:txt,estilo:est?est[1]:null};
+}
+function mismaFormula(txt,valor){
+  var m=/<f[^>]*>([\s\S]*?)<\/f>/.exec(txt);
+  if(!m)return false;
+  var a=m[1].replace(/\$/g,"").replace(/&amp;/g,"&").toUpperCase();
+  var b=valor.slice(1).replace(/\$/g,"").toUpperCase();
+  return a===b;
+}
+function nuevaCelda(ref,estilo,valor){
+  var s=estilo?' s="'+estilo+'"':"";
+  if(typeof valor==="string"&&valor.charAt(0)==="=")
+    return '<c r="'+ref+'"'+s+'><f>'+xesc(valor.slice(1))+'</f></c>';
+  if(valor===null||valor===undefined||valor==="")
+    return '<c r="'+ref+'"'+s+'/>';
+  if(typeof valor==="number"&&isFinite(valor))
+    return '<c r="'+ref+'"'+s+'><v>'+(Math.round(valor*1e10)/1e10)+'</v></c>';
+  return '<c r="'+ref+'"'+s+' t="inlineStr"><is><t>'+xesc(valor)+'</t></is></c>';
+}
+
+/* ---------------------------------------------------------------- libro */
+function mapaHojas(entradas){
+  return Promise.all([
+    D.inflar(entradas["xl/workbook.xml"]),
+    D.inflar(entradas["xl/_rels/workbook.xml.rels"])
+  ]).then(function(r){
+    var wb=r[0]||"",rels=r[1]||"",rmap={},mapa={},m;
+    var re=/Id="(rId\d+)"[^>]*Target="([^"]+)"/g;
+    while((m=re.exec(rels)))rmap[m[1]]=m[2];
+    var rs=/<sheet[^>]*name="([^"]+)"[^>]*r:id="(rId\d+)"/g;
+    while((m=rs.exec(wb))){
+      var tgt=String(rmap[m[2]]||"").replace(/^\/?xl\//,"").replace(/^\//,"");
+      var clave="xl/"+tgt;
+      if(entradas[clave]){
+        var nom=m[1].replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">")
+                    .replace(/&quot;/g,'"').replace(/&apos;/g,"'");
+        mapa[nom]=clave;
+      }
+    }
+    return mapa;
+  });
+}
+function forzarRecalculo(wb){
+  if(wb.indexOf('fullCalcOnLoad="1"')>=0)return wb;
+  if(/<calcPr[^>]*\/>/.test(wb))
+    return wb.replace(/<calcPr([^>]*?)\/>/,'<calcPr$1 fullCalcOnLoad="1"/>');
+  if(wb.indexOf("<calcPr")>=0)
+    return wb.replace(/<calcPr([^>]*)>/,'<calcPr$1 fullCalcOnLoad="1">');
+  return wb.replace("</workbook>",'<calcPr calcId="191029" fullCalcOnLoad="1"/></workbook>');
+}
+
+/* Aplica el plan sobre los bytes del libro y devuelve los bytes nuevos. */
+function aplicar(ab,plan){
+  var entradas,orden;
+  try{
+    entradas=D.leerZip(ab);
+    orden=Object.keys(entradas);
+  }catch(err){
+    return Promise.reject(new Error("No he podido abrir el libro para escribir: "+err.message));
+  }
+  if(!entradas["xl/workbook.xml"])
+    return Promise.reject(new Error("El libro no tiene xl/workbook.xml."));
+
+  return mapaHojas(entradas).then(function(mapa){
+    var hojasATocar={},faltan=[];
+    plan.forEach(function(d){
+      var clave=mapa[d.hoja];
+      if(clave)hojasATocar[clave]=true;
+      else if(faltan.indexOf(d.hoja)<0)faltan.push(d.hoja);
+    });
+    var claves=Object.keys(hojasATocar);
+    /* workbook.xml se toca siempre, para marcar el recalculo al abrir */
+    var aLeer=claves.concat(["xl/workbook.xml"]);
+    return Promise.all(aLeer.map(function(k){return D.inflar(entradas[k]);}))
+     .then(function(textos){
+       var xmls={};
+       aLeer.forEach(function(k,i){xmls[k]=textos[i];});
+       var escritas=0,noEncontradas=[];
+       plan.forEach(function(d){
+         var clave=mapa[d.hoja];
+         if(!clave)return;
+         var rejilla=celdasDeRango(d.dir);
+         if(!rejilla){noEncontradas.push(d.hoja+"!"+d.dir+" (rango inválido)");return;}
+         var datos=d.cuerpo.values||d.cuerpo.formulas||[];
+         var esF=!!d.cuerpo.formulas;
+         var xml=xmls[clave];
+         for(var f=0;f<rejilla.length;f++){
+           for(var c=0;c<rejilla[f].length;c++){
+             var ref=rejilla[f][c],v=(datos[f]||[])[c];
+             if(v===undefined)continue;
+             if(esF&&typeof v==="string"&&v!==""&&v.charAt(0)!=="=")v="="+v;
+             var loc=localizar(xml,ref);
+             if(!loc){noEncontradas.push(d.hoja+"!"+ref);continue;}
+             /* Si la celda ya lleva esa misma formula (aunque escrita con $), se deja
+                tal cual: asi el archivo cambia lo menos posible. */
+             if(typeof v==="string"&&v.charAt(0)==="="&&mismaFormula(loc.txt,v))continue;
+             var nueva=nuevaCelda(ref,loc.estilo,v);
+             if(nueva===loc.txt)continue;
+             xml=xml.slice(0,loc.ini)+nueva+xml.slice(loc.fin);
+             escritas++;
+           }
+         }
+         xmls[clave]=xml;
+       });
+       xmls["xl/workbook.xml"]=forzarRecalculo(xmls["xl/workbook.xml"]);
+
+       var enc=new TextEncoder(),salida={};
+       orden.forEach(function(nombre){
+         if(xmls[nombre]!==undefined)salida[nombre]={bytes:enc.encode(xmls[nombre])};
+         else{
+           var e=entradas[nombre];
+           salida[nombre]={crudo:e.raw,metodo:e.metodo,crc:e.crc,usize:e.usize};
+         }
+       });
+       return escribirZip(orden,salida).then(function(bytes){
+         return {bytes:bytes,escritas:escritas,noEncontradas:noEncontradas,
+                 hojasQueFaltan:faltan,partes:orden.length};
+       });
+     });
+  });
+}
+
+window.DINXW={aplicar:aplicar,celdasDeRango:celdasDeRango,colNum:colNum,colStr:colStr};
 })();
 
 
@@ -1423,32 +1697,38 @@ function leerExcel(){
   });
 }
 
-/* ----------------------------- escritura por celdas ----------------------- */
-function abrirSesionLibro(){
-  return g(ruta()+"/workbook/createSession",
-    {method:"POST",headers:{"Content-Type":"application/json"},
-     body:JSON.stringify({persistChanges:true})})
-   .then(function(j){return (j&&j.id)||"";});
+/* ------------------------- bajar y subir el libro -------------------------- */
+function descargarContenido(){
+  return token().then(function(t){
+    return fetch(GRAPH+ruta()+"/content",{headers:{Authorization:"Bearer "+t}})
+     .then(function(r){
+       if(!r.ok)throw new Error("No he podido descargar el libro ("+r.status+").");
+       return r.arrayBuffer();
+     });
+  });
 }
-function cerrarSesionLibro(sid){
-  if(!sid)return Promise.resolve();
-  return g(ruta()+"/workbook/closeSession",
-    {method:"POST",headers:{"workbook-session-id":sid}}).catch(function(){});
+function subirContenido(bytes,etag){
+  return token().then(function(t){
+    var h={Authorization:"Bearer "+t,
+      "Content-Type":"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"};
+    if(etag)h["if-match"]=etag;
+    return fetch(GRAPH+ruta()+"/content",{method:"PUT",headers:h,body:bytes})
+     .then(function(r){
+       if(r.status===412||r.status===409){
+         var e2=new Error("conflicto");e2.conflicto=true;throw e2;
+       }
+       return r.text().then(function(txt){
+         var j=null;try{j=txt?JSON.parse(txt):null;}catch(x){}
+         if(!r.ok){
+           var m=(j&&j.error&&j.error.message)||(r.status+" "+r.statusText);
+           throw new Error(m);
+         }
+         return j;
+       });
+     });
+  });
 }
-function patch(sid,hoja,dir,cuerpo){
-  return g(ruta()+"/workbook/worksheets('"+encodeURIComponent(hoja)+"')/range(address='"+dir+"')",
-    {method:"PATCH",
-     headers:{"Content-Type":"application/json","workbook-session-id":sid},
-     body:JSON.stringify(cuerpo)});
-}
-function enSerie(tareas){
-  var i=0;
-  function paso(){
-    if(i>=tareas.length)return Promise.resolve();
-    return tareas[i++]().then(paso);
-  }
-  return paso();
-}
+
 
 /* Valor que le toca a la columna E de una fila de plan: numero, formula o vacio */
 function celdaReal(m,fila){
@@ -1548,8 +1828,9 @@ function simular(){
       '<td>'+(d.cuerpo.formulas?'<span class="tag plan">fórmulas</span>':'<span class="tag">valores</span>')+'</td></tr>';
   }).join("");
   hoja("Lo que voy a escribir",
-    '<p class="hint">'+plan.length+' escrituras por rango. Nunca toco las columnas D ni F de las hojas '+
-    'mensuales, que es donde viven las fórmulas del plan y la desviación.</p>'+
+    '<p class="hint">'+plan.length+' bloques de celdas. Nunca toco las columnas D ni F de las hojas '+
+    'mensuales, que es donde viven las fórmulas del plan y la desviación, ni ninguna otra celda '+
+    'del libro.</p>'+
     '<div class="tw" style="margin-top:12px"><table class="t"><thead><tr><th>Qué</th><th>Hoja</th>'+
     '<th class="n">Rango</th><th class="n">Celdas con dato</th><th>Tipo</th></tr></thead><tbody>'+
     filas+'</tbody></table></div>'+
@@ -1608,58 +1889,61 @@ function pendientes(){
 
 function guardarEnExcel(forzar){
   if(!listo()){aviso("Primero conecta tu cuenta y elige el libro (Ajustes).");return;}
-  if(!navigator.onLine){aviso("Sin conexión. Lo tienes guardado en el móvil; dale a Guardar cuando vuelvas a tener red.");return;}
+  if(!navigator.onLine){
+    aviso("Sin conexión. Lo tienes guardado aquí; dale a Guardar cuando vuelvas a tener red.");return;}
   var p=pendientes();
   if(!p){aviso("Antes tengo que leer el Excel una vez para saber de dónde partimos.");return;}
   if(!p.total){V.dirty=false;guardarLocalEstado();pintar();aviso("El Excel ya está al día.");return;}
-  var sid="";
-  ocupar("Guardando en el Excel…");
+  var plan=planEscritura(p),info=null;
+  ocupar("Bajando el libro…");
   metadatos()
    .then(function(meta){
+     /* se escribe siempre sobre la version que hay ahora mismo en OneDrive */
      if(!forzar&&C.etag&&meta.eTag&&meta.eTag!==C.etag){
        var err=new Error("conflicto");err.conflicto=true;throw err;
      }
-     return abrirSesionLibro();
+     C.etag=meta.eTag||C.etag;
+     return descargarContenido();
    })
-   .then(function(id){
-     sid=id;
-     return enSerie(planEscritura(p).map(function(d){
-       return function(){return patch(sid,d.hoja,d.dir,d.cuerpo);};
-     }));
+   .then(function(ab){
+     ocupar("Cambiando las celdas…");
+     return window.DINXW.aplicar(ab,plan);
    })
-   .then(function(){
-     return g(ruta()+"/workbook/application/calculate",
-       {method:"POST",headers:{"Content-Type":"application/json","workbook-session-id":sid},
-        body:JSON.stringify({calculationType:"Full"})}).catch(function(){});
+   .then(function(res){
+     info=res;
+     if(!res.escritas)throw new Error("no he encontrado ninguna celda que cambiar");
+     ocupar("Subiendo el libro…");
+     return subirContenido(res.bytes,forzar?null:C.etag);
    })
-   .then(function(){return cerrarSesionLibro(sid);})
-   .then(function(){return metadatos();})
-   .then(function(meta){
-     C.etag=meta.eTag||"";C.leido=new Date().toISOString();
+   .then(function(j){
+     C.etag=(j&&j.eTag)||"";
+     C.leido=new Date().toISOString();
      guardarCuenta();fijarBase();V.dirty=false;guardarLocalEstado();
      ocupar("");
-     var n=p.meses.length;
-     aviso("Escrito en el Excel"+(n?" ("+n+" mes"+(n===1?"":"es")+")":"")+".");
-     if(p.sinSitio.length)hoja("Esto no ha cabido en el Excel",
-       '<p class="hint">El resto sí se ha escrito. Estas cosas hay que añadirlas a mano a la hoja:</p><ul class="hint" style="margin-top:8px">'+
-       p.sinSitio.map(function(s){return '<li style="margin:4px 0">· '+e(s)+'</li>';}).join("")+'</ul>');
+     aviso("Escrito en el Excel: "+info.escritas+" celda"+(info.escritas===1?"":"s")+".");
+     var pegas=(info.noEncontradas||[])
+       .concat((info.hojasQueFaltan||[]).map(function(h){return "no existe la hoja «"+h+"»";}))
+       .concat(p.sinSitio||[]);
+     if(pegas.length)hoja("Esto se ha quedado fuera",
+       '<p class="hint">El resto sí se ha escrito. Estas cosas hay que arreglarlas a mano en el Excel:</p>'+
+       '<ul class="hint" style="margin-top:8px">'+
+       pegas.map(function(s){return '<li style="margin:4px 0">· '+e(s)+'</li>';}).join("")+'</ul>');
    })
    .catch(function(err){
      ocupar("");
-     return cerrarSesionLibro(sid).then(function(){
-       if(err&&err.conflicto){
-         hoja("El Excel ha cambiado por otro lado",
-           '<p class="hint">Alguien (o tú desde el ordenador) ha guardado el libro después de que la app lo leyera. '+
-           'Si escribo encima, se perderían esos cambios.</p>',
-           '<button class="btn" data-act="releer">Leer el Excel y perder lo mío</button>'+
-           '<button class="btn btn-danger" data-act="forzar">Escribir encima</button>'+
-           '<button class="btn" data-act="cerrar">Dejarlo</button>');
-         return;
-       }
-       aviso("No he podido guardar: "+((err&&err.message)||"error desconocido"));
-     });
+     if(err&&err.conflicto){
+       hoja("El Excel ha cambiado por otro lado",
+         '<p class="hint">El libro se ha guardado después de que la app lo leyera: puede haber sido tú '+
+         'desde el ordenador, o quien tenga permiso de edición. Si escribo encima, se perderían esos cambios.</p>',
+         '<button class="btn" data-act="releer">Traer el Excel y perder lo mío</button>'+
+         '<button class="btn btn-danger" data-act="forzar">Escribir encima</button>'+
+         '<button class="btn" data-act="cerrar">Dejarlo</button>');
+       return;
+     }
+     aviso("No he podido guardar: "+((err&&err.message)||"error desconocido"));
    });
 }
+
 
 /* ---------------------------------------------------------------- descargas */
 function bajar(nombre,datos,tipo){
@@ -1728,8 +2012,9 @@ function tarjetaCuenta(){
     '<button class="btn btn-quiet btn-sm" data-act="salir">Cerrar sesión</button>'+
     '</div>'+
     '<div class="note note-info" style="margin-top:14px"><span class="ic">i</span><div>'+
-    '<b>Guardar</b> escribe celda a celda con la API de Excel: no reescribe el archivo, así que tus '+
-    'gráficos y fórmulas no se tocan y los totales se recalculan solos. '+
+    '<b>Guardar</b> baja el libro, cambia solo las celdas que toca y lo vuelve a subir. Todo lo demás '+
+    'se copia byte a byte, así que tus gráficos, fórmulas y formatos quedan intactos, y Excel '+
+    'recalcula los totales al abrirlo. OneDrive guarda la versión anterior en su historial. '+
     '<b>Leer</b> trae lo que diga el Excel y descarta lo que tengas aquí sin guardar.<br>'+
     'Cierra el libro en el ordenador antes de guardar, o Excel se quejará de coautoría.</div></div>'+
     '<hr class="divider">'+

@@ -52,7 +52,8 @@ Esto es lo que le da permiso para tocar tu OneDrive.
    por eso el Id. de aplicación no es información sensible.
 7. En **Permisos de API**, añade de *Microsoft Graph → Permisos delegados*: **`Files.ReadWrite`**.
    Con cuenta personal no hace falta que lo apruebe ningún administrador: te lo preguntará a ti
-   la primera vez que entres.
+   la primera vez que entres. (Con eso basta: la app solo usa lectura y escritura de archivos,
+   no la API de Excel.)
 
 > Si prefieres el permiso mínimo posible, puedes usar `Files.ReadWrite.AppFolder` en lugar de
 > `Files.ReadWrite`, pero entonces el Excel tiene que vivir dentro de la carpeta que Microsoft
@@ -84,6 +85,43 @@ propia sesión; el Excel es lo que los mantiene sincronizados.
 
 ---
 
+## Revisarlo desde el ordenador del trabajo
+
+El libro vive en tu OneDrive personal, y la app entra con esa cuenta. Para poder abrirlo desde el
+ordenador de la oficina tienes dos caminos.
+
+**A. Compartirlo con tu cuenta profesional** (recomendado)
+
+1. En [onedrive.live.com](https://onedrive.live.com), botón derecho sobre `Dineritos Pro.xlsx` →
+   **Compartir**.
+2. Escribe tu dirección de trabajo y —esto es lo importante— pon el permiso en **«Puede ver»**,
+   no en «Puede editar».
+3. Te llega un correo al buzón del trabajo con el enlace. Guárdalo en favoritos y ya lo abres
+   cuando quieras, en Excel para la web.
+
+Por qué en solo lectura: la app sube el libro entero cada vez que guardas. Si desde el trabajo lo
+editaras a la vez, uno de los dos cambios se perdería. En solo lectura eso no puede pasar, y para
+revisar es lo que necesitas. Si algún día tienes que editar desde el trabajo, cambias el permiso
+un momento y luego lo vuelves a dejar en «Puede ver».
+
+**B. Entrar con tu cuenta personal en el navegador del trabajo**
+
+Sin compartir nada: abres onedrive.live.com, inicias sesión con la cuenta personal y ahí está.
+Más simple, pero deja una sesión personal en un equipo de la empresa, que en algunos sitios no
+está bien visto.
+
+**Tres cosas que conviene saber**
+
+- La app **no se entera** de con quién compartes el libro: entra con tu cuenta personal y usa su
+  propio OneDrive. Compartir no le afecta en nada.
+- Si el libro cambia por otro lado entre que la app lo leyó y guardas, la app lo detecta y te
+  pregunta en vez de pisarlo.
+- Algunas empresas bloquean en su red los dominios de OneDrive personal, y el correo con la
+  invitación queda en tu buzón de trabajo (o sea, visible para la empresa). Nada de eso rompe
+  nada, pero mejor saberlo antes.
+
+---
+
 ## El uso diario
 
 - **Anotar un gasto**: pestaña Mes → `＋ Anotar gasto` → concepto, categoría, importe → *Anotar*.
@@ -96,9 +134,15 @@ propia sesión; el Excel es lo que los mantiene sincronizados.
 
 ## Cosas que conviene saber
 
-- **Cómo escribe**: celda a celda, con la API de Excel de Microsoft Graph. No reescribe el
-  archivo, así que tus 5 gráficos, el formato condicional y las validaciones no se tocan, y los
-  totales se recalculan solos en el servidor.
+- **Cómo escribe**: baja el libro, cambia dentro solo las celdas que toca y lo vuelve a subir.
+  Todo lo demás se copia byte a byte. Comprobado sobre tu libro real: de sus 45 componentes
+  internos, 41 quedan idénticos y solo cambian las hojas afectadas; los 9 componentes de los
+  gráficos y dibujos, el formato condicional (69 reglas) y las validaciones (19) siguen intactos.
+  El libro queda marcado para que Excel recalcule los totales al abrirlo.
+  > No se usa la API de Excel de Graph (`/workbook/...`) porque Microsoft **no la soporta en
+  > OneDrive personal**, solo en OneDrive de empresa.
+- **Si algo saliera mal**, OneDrive guarda la versión anterior: botón derecho sobre el archivo →
+  *Historial de versiones*.
 - **Nunca toca las columnas D ni F** de las hojas mensuales: ahí viven las fórmulas del plan y
   de la desviación. Solo escribe en B, C, E, G y H.
 - **La sesión de Microsoft caduca cada 24 h** en apps de navegador. Normalmente se renueva sola
