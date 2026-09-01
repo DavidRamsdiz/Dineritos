@@ -195,13 +195,15 @@ está bien visto.
 
 ## Actualizar la app
 
-Sube de nuevo `app.js` y `sw.js` al repositorio y refresca. Mientras haya conexión, la app pide
-siempre la última versión a la red, así que llega sola en la siguiente carga.
+Sube de nuevo **los tres**: `app.js`, `index.html` y `sw.js`. El `index.html` importa porque
+llama al script con la versión en la dirección (`app.js?v=afa5ff3`), y eso es lo que impide que
+un navegador te sirva una copia vieja.
 
 **Para saber qué versión tiene cada dispositivo**, mira el final de la pantalla: pone
 `Versión` y siete caracteres. Si el móvil y el ordenador muestran códigos distintos, uno de los dos
 se ha quedado atrás: cierra la app del todo y vuelve a abrirla. En Android, si se resiste:
-Ajustes de Chrome → Configuración de sitios → tu dirección → *Borrar datos*.
+Chrome → ⋮ → Configuración → Configuración de sitios → Todos los sitios → tu dirección →
+*Borrar y restablecer*.
 
 ## Copias de seguridad
 
