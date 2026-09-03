@@ -187,16 +187,21 @@ function ahorroPlan(mes,anio){
 function realPorDefecto(id){
   return (id==="COMPRAS"||id==="VIDADIARIA")?null:"auto";
 }
+/* Importe real de una fila de plan: "auto" sigue al plan, un numero es un importe a mano */
+function realDeFila(r,reales){
+  var v=reales.hasOwnProperty(r.id)?reales[r.id]:realPorDefecto(r.id);
+  var auto=(v==="auto"),real;
+  if(auto)real=r.plan;
+  else if(typeof v==="number")real=v;
+  else real=null;
+  return {auto:auto,real:real};
+}
 
 /* ---------------------------------------------------------------- mes: calculo */
 function calcMes(mes,anio){
   var m=mesObj(mes,anio),reales=(m&&m.reales)||{},apuntes=(m&&m.apuntes)||[];
   var filas=filasPlan(mes,anio).map(function(r){
-    var v=reales.hasOwnProperty(r.id)?reales[r.id]:realPorDefecto(r.id);
-    var auto=(v==="auto"),real;
-    if(auto)real=r.plan;
-    else if(typeof v==="number")real=v;
-    else real=null;
+    var rr=realDeFila(r,reales),auto=rr.auto,real=rr.real;
     return {id:r.id,concepto:r.concepto,cat:r.cat,plan:r.plan,nota:r.nota||"",
       anual:!!r.anual,rec:r.rec,auto:auto,real:real,
       efec:real===null?0:real,dev:real===null?null:real-r.plan};
@@ -223,14 +228,12 @@ function calcMes(mes,anio){
   }
   filas.forEach(function(f){acu(f.cat,f.plan,f.efec);});
   apuntes.forEach(function(a){acu(a.categoria||"IMPREVISTO",0,n0(a.importe));});
-  /* Hucha */
-  var filaHucha=filas.filter(function(f){return f.id==="HUCHA";})[0];
-  var huchaIn=(filaHucha?filaHucha.efec:0);
-  var huchaOut=0;
-  apuntes.forEach(function(a){
-    if(a.categoria==="INGRESO HUCHA")huchaIn+=n0(a.importe);
-    if(a.categoria==="GASTO HUCHA")huchaOut+=n0(a.importe);
-  });
+  /* Hucha: la asignacion y lo gastado del fondo (virtual) y el ajuste fisico del mes.
+     La hucha es una cuenta que no baja de cero: lo que no cubre lo adelantas tu y es
+     gasto del mes; cuando lo recuperas, esa parte de la asignacion no sale de tu cuenta. */
+  var h=huchaMes(mes,anio);
+  var huchaIn=h.ent,huchaOut=h.sal;
+  gastoReal+=h.adelanto-h.recuperado;
   /* Control de presupuestos */
   function sumApuntes(cat){
     return apuntes.reduce(function(s,a){return a.categoria===cat?s+n0(a.importe):s;},0);
@@ -248,25 +251,57 @@ function calcMes(mes,anio){
     gastoPlan:gastoPlan,gastoReal:gastoReal,ahoPlan:ahoPlan,ahoReal:ahoReal,
     salidasPlan:gastoPlan+ahoPlan,salidasReal:gastoReal+ahoReal,
     balancePlan:neto-gastoPlan-ahoPlan,balanceReal:neto-gastoReal-ahoReal,
-    porCat:porCat,huchaIn:huchaIn,huchaOut:huchaOut,presup:presup,
+    porCat:porCat,huchaIn:huchaIn,huchaOut:huchaOut,hucha:h,presup:presup,
     anotado:apuntes.length>0};
 }
 
-/* Serie de la hucha: saldo corrido sobre todos los meses, en orden */
+/* Movimientos brutos de la hucha en un mes: la asignacion (fila HUCHA + apuntes
+   INGRESO HUCHA) y lo gastado del fondo (apuntes GASTO HUCHA). Sin pasar por calcMes,
+   porque calcMes necesita la serie para el ajuste fisico. */
+function huchaFlujos(mes,anio){
+  var m=mesObj(mes,anio),reales=(m&&m.reales)||{},apuntes=(m&&m.apuntes)||[];
+  var fila=filasPlan(mes,anio).filter(function(f){return f.id==="HUCHA";})[0];
+  var ent=fila?n0(realDeFila(fila,reales).real):0,sal=0;
+  apuntes.forEach(function(a){
+    if(a.categoria==="INGRESO HUCHA")ent+=n0(a.importe);
+    if(a.categoria==="GASTO HUCHA")sal+=n0(a.importe);
+  });
+  return {ent:ent,sal:sal};
+}
+
+/* Serie de la hucha, mes a mes y en orden.
+   La hucha es una cuenta de ahorro: NO puede bajar de cero. Se lleva el saldo "virtual"
+   (asignado - gastado, como el Excel) y de ahi sale la realidad fisica:
+     - deuda      = lo que la hucha te debe (el virtual en negativo)
+     - adelanto   = lo que pones de tu bolsillo este mes porque la hucha se quedo a cero
+     - recuperado = lo que te vuelve este mes: esa parte de la asignacion no entra fisicamente
+     - entFis / salFis = lo que de verdad entra y sale de la cuenta
+     - saldo      = saldo fisico, siempre >= 0
+   Ejemplo: asignas 250 y gastas 300 -> saldo 0, adelantas 50. Al mes siguiente asignas 250:
+   50 vuelven a ti, entran 200 y la hucha queda en 200. */
 function serieHucha(){
   if(_cache.hu)return _cache.hu;
-  var saldo=0;
+  var virtual=0,saldo=0,deuda=0;
   _cache.hu=mesesOrden().map(function(m){
-    var c=calcMes(m.mes,m.anio);
-    saldo+=c.huchaIn-c.huchaOut;
-    return {mes:m.mes,anio:m.anio,key:c.key,ent:c.huchaIn,sal:c.huchaOut,saldo:saldo};
+    var f=huchaFlujos(m.mes,m.anio);
+    virtual+=f.ent-f.sal;
+    var deudaNueva=Math.max(0,-virtual);
+    var adelanto=Math.max(0,deudaNueva-deuda),recuperado=Math.max(0,deuda-deudaNueva);
+    deuda=deudaNueva;
+    var saldoIni=saldo;
+    saldo=Math.max(0,virtual);
+    return {mes:m.mes,anio:m.anio,key:mkey(m.mes,m.anio),ent:f.ent,sal:f.sal,
+      entFis:f.ent-recuperado,salFis:f.sal-adelanto,adelanto:adelanto,recuperado:recuperado,
+      deuda:deuda,saldoIni:saldoIni,saldo:saldo,virtual:virtual};
   });
   return _cache.hu;
 }
-function huchaSaldoTras(mes,anio){
-  var f=serieHucha().filter(function(h){return h.key===mkey(mes,anio);})[0];
-  return f?f.saldo:0;
+var HUCHA_VACIA={ent:0,sal:0,entFis:0,salFis:0,adelanto:0,recuperado:0,deuda:0,saldoIni:0,saldo:0,virtual:0};
+function huchaMes(mes,anio){
+  var k=mkey(mes,anio);
+  return serieHucha().filter(function(h){return h.key===k;})[0]||HUCHA_VACIA;
 }
+function huchaSaldoTras(mes,anio){return huchaMes(mes,anio).saldo;}
 
 /* Resumen de un ano */
 function resumenAnio(anio){
@@ -275,17 +310,19 @@ function resumenAnio(anio){
   var filas=mesesOrden().filter(function(m){return +m.anio===+anio;}).map(function(m){
     var c=calcMes(m.mes,m.anio);
     acum+=c.ahoReal;
-    var h=hu.filter(function(x){return x.key===c.key;})[0]||{ent:0,sal:0,saldo:0};
+    var h=hu.filter(function(x){return x.key===c.key;})[0]||HUCHA_VACIA;
     return {mes:m.mes,anio:m.anio,key:c.key,neto:c.neto,gastoPlan:c.gastoPlan,gastoReal:c.gastoReal,
       ahoPlan:c.ahoPlan,ahoReal:c.ahoReal,balancePlan:c.balancePlan,balanceReal:c.balanceReal,
-      acum:acum,porCat:c.porCat,huEnt:h.ent,huSal:h.sal,huSaldo:h.saldo,anotado:c.anotado};
+      acum:acum,porCat:c.porCat,huEnt:h.ent,huSal:h.sal,huSaldo:h.saldo,
+      huAdel:h.adelanto,huRec:h.recuperado,huDeuda:h.deuda,anotado:c.anotado};
   });
   var tot=filas.reduce(function(a,f){
     a.neto+=f.neto;a.gastoPlan+=f.gastoPlan;a.gastoReal+=f.gastoReal;
     a.ahoPlan+=f.ahoPlan;a.ahoReal+=f.ahoReal;
     a.balancePlan+=f.balancePlan;a.balanceReal+=f.balanceReal;
-    a.huEnt+=f.huEnt;a.huSal+=f.huSal;return a;
-  },{neto:0,gastoPlan:0,gastoReal:0,ahoPlan:0,ahoReal:0,balancePlan:0,balanceReal:0,huEnt:0,huSal:0});
+    a.huEnt+=f.huEnt;a.huSal+=f.huSal;a.huAdel+=f.huAdel;a.huRec+=f.huRec;return a;
+  },{neto:0,gastoPlan:0,gastoReal:0,ahoPlan:0,ahoReal:0,balancePlan:0,balanceReal:0,
+     huEnt:0,huSal:0,huAdel:0,huRec:0});
   var cats=CATS_ORDEN.map(function(c){
     return {cat:c,
       real:filas.reduce(function(s,f){return s+(f.porCat[c]?f.porCat[c].real:0);},0),
@@ -299,6 +336,7 @@ function resumenAnio(anio){
     conseguidoPlan:filas.reduce(function(s,f){return s+f.ahoPlan;},0),
     conseguidoReal:tot.ahoReal,saldoIni:saldoIni,
     saldoFin:filas.length?filas[filas.length-1].huSaldo:saldoIni,
+    deudaFin:filas.length?filas[filas.length-1].huDeuda:0,
     bono:filas.reduce(function(s,f){return s+bonoDe(f.mes,f.anio);},0),
     meses:filas.length};
   _cache[ck]=out;return out;
@@ -587,14 +625,15 @@ function csvApuntes(){
 function csvResumen(anio){
   var R=resumenAnio(anio);
   var out=[["MES","INGRESOS","GASTOS PREV.","GASTOS REAL","AHORRO","BALANCE PREV.","BALANCE REAL",
-            "AHORRO ACUM.","HUCHA ENTRA","HUCHA SALE","HUCHA SALDO"]];
+            "AHORRO ACUM.","HUCHA ENTRA","HUCHA SALE","HUCHA TU BOLSILLO","HUCHA SALDO"]];
   R.filas.forEach(function(f){
     out.push([cap(f.mes),numES(f.neto),numES(f.gastoPlan),numES(f.gastoReal),numES(f.ahoReal),
-      numES(f.balancePlan),numES(f.balanceReal),numES(f.acum),numES(f.huEnt),numES(f.huSal),numES(f.huSaldo)]);
+      numES(f.balancePlan),numES(f.balanceReal),numES(f.acum),numES(f.huEnt),numES(f.huSal),
+      numES(f.huRec-f.huAdel),numES(f.huSaldo)]);
   });
   out.push(["TOTAL "+anio,numES(R.tot.neto),numES(R.tot.gastoPlan),numES(R.tot.gastoReal),
     numES(R.tot.ahoReal),numES(R.tot.balancePlan),numES(R.tot.balanceReal),
-    numES(R.tot.ahoReal),numES(R.tot.huEnt),numES(R.tot.huSal),numES(R.saldoFin)]);
+    numES(R.tot.ahoReal),numES(R.tot.huEnt),numES(R.tot.huSal),numES(R.tot.huRec-R.tot.huAdel),numES(R.saldoFin)]);
   out.push([]);
   out.push(["GASTO POR CATEGORIA","REAL","PREVISTO"]);
   R.cats.forEach(function(c){out.push([c.cat,numES(c.real),numES(c.plan)]);});
@@ -617,7 +656,7 @@ window.DIN={
   repLineas:repLineas,repTotales:repTotales,
   excDe:excDe,bonoDe:bonoDe,netoDe:netoDe,cursoDe:cursoDe,mesObj:mesObj,
   mesesOrden:mesesOrden,anios:anios,filasPlan:filasPlan,ahorroPlan:ahorroPlan,
-  calcMes:calcMes,serieHucha:serieHucha,huchaSaldoTras:huchaSaldoTras,resumenAnio:resumenAnio,
+  calcMes:calcMes,serieHucha:serieHucha,huchaMes:huchaMes,huchaSaldoTras:huchaSaldoTras,resumenAnio:resumenAnio,
   abrirXlsx:abrirXlsx,csvApuntes:csvApuntes,csvResumen:csvResumen,tsvMes:tsvMes,
   leerZip:leerZip,inflar:inflar,
   hayDatos:hayDatos,V:V,
@@ -1060,7 +1099,6 @@ function vistaMes(){
   ms.forEach(function(m,i){if(m.mes===V.mes&&+m.anio===+V.anio)idx=i;});
   var m=ms[idx];V.mes=m.mes;V.anio=m.anio;
   var C=D.calcMes(m.mes,m.anio);
-  var saldoHucha=D.huchaSaldoTras(m.mes,m.anio);
 
   var cabecera='<div class="mespick">'+
     '<button class="btn btn-icon" data-act="mes-prev"'+(idx===0?" disabled":"")+' aria-label="Mes anterior">‹</button>'+
@@ -1145,6 +1183,15 @@ function vistaMes(){
         ' type="number" step="0.01" placeholder="—" value="'+num2(f.real)+'">'+badge+'</div></td>'+
       '<td class="n">'+dev(f.dev)+'</td></tr>';
   }).join("");
+  var H=C.hucha;
+  if(H.adelanto>0)filas+='<tr><td class="c-name">Adelanto a la hucha'+
+    '<small>La hucha se quedó a cero: esto sale de tu cuenta y te vuelve de las próximas asignaciones</small></td>'+
+    '<td>'+tag("HUCHA")+'</td><td class="n">'+eur(0)+'</td><td class="n">'+eur(H.adelanto)+'</td>'+
+    '<td class="n">'+dev(H.adelanto)+'</td></tr>';
+  if(H.recuperado>0)filas+='<tr><td class="c-name">Recuperas lo adelantado a la hucha'+
+    '<small>De la asignación de '+eur0(H.ent)+', '+eur0(H.recuperado)+' vuelven a ti: a la hucha entran '+eur0(H.entFis)+'</small></td>'+
+    '<td>'+tag("HUCHA")+'</td><td class="n">'+eur(0)+'</td><td class="n">−'+eur(H.recuperado)+'</td>'+
+    '<td class="n">'+dev(-H.recuperado)+'</td></tr>';
   var plan='<div class="card card-pad"><div class="sechead"><h2>El plan del mes</h2>'+
     '<span class="right">«auto» sigue al plan · «fijo» es un importe tuyo · pulsa la etiqueta para cambiar</span></div>'+
     '<div class="tw"><table class="t wide"><thead><tr><th>Concepto</th><th>Categoría</th>'+
@@ -1160,13 +1207,25 @@ function vistaMes(){
   var hucha='<div class="card card-pad"><div class="sechead"><h2>La hucha</h2>'+
     '<span class="right">viajes e imprevistos: no es patrimonio</span></div>'+
     '<div class="tw"><table class="t"><tbody>'+
-    '<tr><td class="c-name">Entra este mes</td><td class="n">'+eur(C.huchaIn)+'</td></tr>'+
-    '<tr><td class="c-name">Sale este mes</td><td class="n">'+(C.huchaOut>0?'<span class="neg">−'+eur(C.huchaOut)+'</span>':eur(0))+'</td></tr>'+
-    '<tr class="sum"><td>Saldo tras '+cap(m.mes)+'</td><td class="n '+(saldoHucha<0?"neg":"")+'">'+eur(saldoHucha)+'</td></tr>'+
+    '<tr class="sub"><td class="c-name">Saldo al empezar '+cap(m.mes)+'</td><td class="n">'+eur(H.saldoIni)+'</td></tr>'+
+    '<tr><td class="c-name">Asignación del mes'+
+      (H.recuperado>0?'<small>'+eur0(H.recuperado)+' vuelven a ti por lo que adelantaste: a la hucha entran '+eur0(H.entFis)+'</small>':'')+
+      '</td><td class="n">'+eur(H.entFis)+'</td></tr>'+
+    '<tr><td class="c-name">Gastos pagados con la hucha'+
+      (H.adelanto>0?'<small>La hucha solo cubre '+eur0(H.salFis)+'; los otros '+eur0(H.adelanto)+' los adelantas tú</small>':'')+
+      '</td><td class="n">'+(H.salFis>0?'<span class="neg">−'+eur(H.salFis)+'</span>':eur(0))+'</td></tr>'+
+    '<tr class="sum"><td>Saldo tras '+cap(m.mes)+'</td><td class="n">'+eur(H.saldo)+'</td></tr>'+
     '</tbody></table></div>'+
-    (saldoHucha<0?'<div class="note note-warn" style="margin-top:12px"><span class="ic">!</span>'+
-      '<div>Has gastado de la hucha más de lo que has metido. En cuanto se acumulen los '+
-      eur0(n0(D.S.config.fondoHucha))+' de los próximos meses se recupera, pero de momento está en negativo.</div></div>':'')+
+    (H.adelanto>0?'<div class="note note-warn" style="margin-top:12px"><span class="ic">!</span>'+
+      '<div>La hucha no puede bajar de cero, así que este mes adelantas <b>'+eur(H.adelanto)+'</b> de tu cuenta: '+
+      'cuentan como gasto del mes. Te vuelven de las próximas asignaciones de '+eur0(n0(D.S.config.fondoHucha))+
+      (H.deuda>H.adelanto+0.005?'; en total la hucha te debe <b>'+eur(H.deuda)+'</b>':'')+'.</div></div>':
+     H.deuda>0.005?'<div class="note note-warn" style="margin-top:12px"><span class="ic">!</span>'+
+      '<div>La hucha te debe <b>'+eur(H.deuda)+'</b> de lo que adelantaste en meses anteriores. '+
+      'Se te devuelve de las próximas asignaciones antes de que la hucha vuelva a crecer.</div></div>':
+     H.recuperado>0?'<div class="note note-info" style="margin-top:12px"><span class="ic">i</span>'+
+      '<div>Este mes recuperas los <b>'+eur(H.recuperado)+'</b> que adelantaste a la hucha: de la asignación de '+
+      eur0(H.ent)+' solo entran '+eur0(H.entFis)+', y el resto se queda en tu cuenta.</div></div>':'')+
     '</div>';
 
   return cabecera+kpis+'<div class="stack-lg" style="margin-top:20px">'+
@@ -1228,17 +1287,30 @@ function vistaAnio(){
     '<span class="right"><button class="btn btn-sm" data-act="tabla-cat">'+
     (V.tablaCat?"Ver gráfico":"Ver tabla")+'</button></span></div>'+graficoCats(R)+'</div>';
 
+  var conBolsillo=R.filas.some(function(f){return f.huAdel>0||f.huRec>0;});
+  function bolsillo(adel,rec){
+    var v=rec-adel;
+    if(Math.abs(v)<0.005)return '<span class="zero">—</span>';
+    return '<span class="'+(v<0?"neg":"pos")+'">'+eurS(v)+'</span>';
+  }
   var hu='<div class="card card-pad"><div class="sechead"><h2>La hucha en '+R.anio+'</h2>'+
     '<span class="right">saldo al empezar el año: '+eur(R.saldoIni)+'</span></div>'+
-    '<div class="tw"><table class="t mid"><thead><tr><th>Mes</th><th class="n">Entra</th>'+
-    '<th class="n">Sale</th><th class="n">Saldo</th></tr></thead><tbody>'+
+    '<div class="tw"><table class="t mid"><thead><tr><th>Mes</th><th class="n">Asignas</th>'+
+    '<th class="n">Gastas</th>'+(conBolsillo?'<th class="n">Tu bolsillo</th>':'')+'<th class="n">Saldo</th></tr></thead><tbody>'+
     R.filas.map(function(f){
       return '<tr><td>'+cap(f.mes)+'</td><td class="n">'+eur(f.huEnt)+'</td>'+
         '<td class="n">'+(f.huSal>0?'<span class="neg">−'+eur(f.huSal)+'</span>':eur(0))+'</td>'+
-        '<td class="n '+(f.huSaldo<0?"neg":"")+'">'+eur(f.huSaldo)+'</td></tr>';
+        (conBolsillo?'<td class="n">'+bolsillo(f.huAdel,f.huRec)+'</td>':'')+
+        '<td class="n">'+eur(f.huSaldo)+'</td></tr>';
     }).join("")+
-    '<tr class="sum"><td>Total</td><td class="n">'+eur(R.tot.huEnt)+'</td><td class="n">'+eur(R.tot.huSal)+
-    '</td><td class="n">'+eur(R.saldoFin)+'</td></tr></tbody></table></div></div>';
+    '<tr class="sum"><td>Total</td><td class="n">'+eur(R.tot.huEnt)+'</td><td class="n">'+eur(R.tot.huSal)+'</td>'+
+    (conBolsillo?'<td class="n">'+bolsillo(R.tot.huAdel,R.tot.huRec)+'</td>':'')+
+    '<td class="n">'+eur(R.saldoFin)+'</td></tr></tbody></table></div>'+
+    (conBolsillo?'<p class="hint" style="margin-top:10px">La hucha no baja de cero: cuando gastas más de lo que tiene, '+
+      'lo adelantas tú (negativo en «Tu bolsillo», cuenta como gasto de ese mes) y te vuelve de las asignaciones siguientes '+
+      '(positivo: esa parte no llega a entrar en la hucha).'+
+      (R.deudaFin>0.005?' A fin de año la hucha aún te debe <b>'+eur(R.deudaFin)+'</b>.':'')+'</p>':'')+
+    '</div>';
 
   var mensual=R.conseguidoReal-R.bono;
   var cierre='<div class="card card-pad"><div class="sechead"><h2>¿Llegas al objetivo?</h2></div>'+
@@ -1516,7 +1588,7 @@ var D=window.DIN,U=window.DINV1,U2=window.DINV2,V=D.V;
 var e=D.esc,eur=D.eur,eur0=D.eur0,cap=D.cap,n0=D.n0;
 var kpi=U.kpi,regla=U.regla,num2=U.num2;
 
-var VERSION="1bteal01";
+var VERSION="f947ee2";
 var LSK="dineritos.estado.v2";     /* el estado de trabajo */
 var LSC="dineritos.cuenta.v2";     /* clientId, sesion y fichero elegido */
 var LSB="dineritos.base.v2";       /* copia de lo ultimo leido del Excel */
