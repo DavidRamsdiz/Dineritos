@@ -25,7 +25,8 @@ var FILAS_FIJAS={6:"COMUNES",7:"REC:0",8:"REC:1",9:"REC:2",10:"REC:3",11:"HACIEN
 var FUENTE_ESPERADA="Dineritos Pro.xlsx";
 
 var S=null;   /* estado */
-var V={tab:"mes",mes:null,anio:null,anioVista:null,dirty:false,tablaCat:false};
+var V={tab:"mes",mes:null,anio:null,anioVista:null,dirty:false,tablaCat:false,
+       desglose:null,desgloseAnio:null,anioModo:null};
 
 /* ---------------------------------------------------------------- formato */
 var nf2=new Intl.NumberFormat("es-ES",{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -241,10 +242,10 @@ function calcMes(mes,anio){
   var fCompras=filas.filter(function(f){return f.id==="COMPRAS";})[0];
   var fVida=filas.filter(function(f){return f.id==="VIDADIARIA";})[0];
   var presup=[
-    {k:"compras",nom:"Compras (Inquisiciones)",pres:fCompras?fCompras.plan:0,gasto:sumApuntes("INQUISICIONES")},
-    {k:"vida",nom:"Vida diaria",pres:fVida?fVida.plan:0,gasto:sumApuntes("VIDA DIARIA")},
-    {k:"ahorro",nom:"Ahorro del mes",pres:ahoPlan,gasto:ahoReal,bueno:true},
-    {k:"hucha",nom:"Fondo hucha",pres:n0(S.config.fondoHucha),gasto:huchaIn,hucha:true}
+    {k:"compras",nom:"Compras (Inquisiciones)",pres:fCompras?fCompras.plan:0,gasto:sumApuntes("INQUISICIONES"),cats:["INQUISICIONES"]},
+    {k:"vida",nom:"Vida diaria",pres:fVida?fVida.plan:0,gasto:sumApuntes("VIDA DIARIA"),cats:["VIDA DIARIA"]},
+    {k:"ahorro",nom:"Ahorro del mes",pres:ahoPlan,gasto:ahoReal,bueno:true,cats:["AHORRO"]},
+    {k:"hucha",nom:"Fondo hucha",pres:n0(S.config.fondoHucha),gasto:huchaIn,hucha:true,cats:["HUCHA","INGRESO HUCHA"]}
   ];
   return {mes:mes,anio:anio,key:mkey(mes,anio),filas:filas,apuntes:apuntes,
     neto:neto,bono:bono,pluxee:n0(S.config.pluxee),
@@ -303,11 +304,11 @@ function huchaMes(mes,anio){
 }
 function huchaSaldoTras(mes,anio){return huchaMes(mes,anio).saldo;}
 
-/* Resumen de un ano */
-function resumenAnio(anio){
-  var ck="res"+anio;if(_cache[ck])return _cache[ck];
+/* Filas de todos los meses de un ano, en orden, con el acumulado de ahorro */
+function filasAnio(anio){
+  var ck="fa"+anio;if(_cache[ck])return _cache[ck];
   var hu=serieHucha(),acum=0;
-  var filas=mesesOrden().filter(function(m){return +m.anio===+anio;}).map(function(m){
+  _cache[ck]=mesesOrden().filter(function(m){return +m.anio===+anio;}).map(function(m){
     var c=calcMes(m.mes,m.anio);
     acum+=c.ahoReal;
     var h=hu.filter(function(x){return x.key===c.key;})[0]||HUCHA_VACIA;
@@ -316,30 +317,70 @@ function resumenAnio(anio){
       acum:acum,porCat:c.porCat,huEnt:h.ent,huSal:h.sal,huSaldo:h.saldo,
       huAdel:h.adelanto,huRec:h.recuperado,huDeuda:h.deuda,anotado:c.anotado};
   });
-  var tot=filas.reduce(function(a,f){
+  return _cache[ck];
+}
+function sumaFilas(filas){
+  return filas.reduce(function(a,f){
     a.neto+=f.neto;a.gastoPlan+=f.gastoPlan;a.gastoReal+=f.gastoReal;
     a.ahoPlan+=f.ahoPlan;a.ahoReal+=f.ahoReal;
     a.balancePlan+=f.balancePlan;a.balanceReal+=f.balanceReal;
-    a.huEnt+=f.huEnt;a.huSal+=f.huSal;a.huAdel+=f.huAdel;a.huRec+=f.huRec;return a;
+    a.huEnt+=f.huEnt;a.huSal+=f.huSal;a.huAdel+=f.huAdel;a.huRec+=f.huRec;
+    a.bono+=bonoDe(f.mes,f.anio);a.meses++;return a;
   },{neto:0,gastoPlan:0,gastoReal:0,ahoPlan:0,ahoReal:0,balancePlan:0,balanceReal:0,
-     huEnt:0,huSal:0,huAdel:0,huRec:0});
+     huEnt:0,huSal:0,huAdel:0,huRec:0,bono:0,meses:0});
+}
+
+/* Resumen de un ano. Con hastaMes (p. ej. "SEPTIEMBRE") solo cuenta los meses hasta ese,
+   incluido: es la vista "hasta hoy". Lo que queda del ano va en `resto`, segun el plan. */
+function resumenAnio(anio,hastaMes){
+  var ck="res"+anio+"|"+(hastaMes||"");if(_cache[ck])return _cache[ck];
+  var todas=filasAnio(anio),filas=todas,resto=[];
+  if(hastaMes){
+    var hi=MESES.indexOf(hastaMes);
+    filas=todas.filter(function(f){return MESES.indexOf(f.mes)<=hi;});
+    resto=todas.slice(filas.length);
+  }
+  var tot=sumaFilas(filas);
   var cats=CATS_ORDEN.map(function(c){
     return {cat:c,
       real:filas.reduce(function(s,f){return s+(f.porCat[c]?f.porCat[c].real:0);},0),
       plan:filas.reduce(function(s,f){return s+(f.porCat[c]?f.porCat[c].plan:0);},0)};
   });
-  var objetivo=n0(S.config.ahorroObjetivo)*filas.length;
-  var saldoIni=0;
+  var obj=n0(S.config.ahorroObjetivo);
+  var hu=serieHucha(),saldoIni=0;
   var idx=hu.map(function(h){return h.key;}).indexOf(filas.length?filas[0].key:"");
   if(idx>0)saldoIni=hu[idx-1].saldo;
-  var out={anio:anio,filas:filas,tot:tot,cats:cats,objetivo:objetivo,
+  var out={anio:anio,filas:filas,tot:tot,cats:cats,objetivo:obj*filas.length,
+    objetivoAnual:obj*todas.length,mesesAnio:todas.length,
+    hasta:hastaMes?(filas.length?filas[filas.length-1].mes:null):null,
+    resto:sumaFilas(resto),
     conseguidoPlan:filas.reduce(function(s,f){return s+f.ahoPlan;},0),
     conseguidoReal:tot.ahoReal,saldoIni:saldoIni,
     saldoFin:filas.length?filas[filas.length-1].huSaldo:saldoIni,
     deudaFin:filas.length?filas[filas.length-1].huDeuda:0,
-    bono:filas.reduce(function(s,f){return s+bonoDe(f.mes,f.anio);},0),
+    bono:tot.bono,
     meses:filas.length};
   _cache[ck]=out;return out;
+}
+
+/* Desglose de una o varias categorias: los apuntes (y las filas del plan con importe) que
+   las componen. Con `mes` solo ese mes; con `hastaMes` solo hasta ese mes del ano. */
+function desgloseCat(cats,anio,mes,hastaMes){
+  var out=[],hi=hastaMes?MESES.indexOf(hastaMes):99;
+  mesesOrden().forEach(function(m){
+    if(+m.anio!==+anio||(mes&&m.mes!==mes)||MESES.indexOf(m.mes)>hi)return;
+    var c=calcMes(m.mes,m.anio),pref=mes?"":cap(m.mes)+" · ";
+    c.filas.forEach(function(f){
+      if(cats.indexOf(f.cat)>=0&&Math.abs(f.efec)>0.005)
+        out.push({concepto:f.concepto,importe:f.efec,sub:pref+"del plan del mes",cat:f.cat});
+    });
+    c.apuntes.forEach(function(a){
+      if(cats.indexOf(a.categoria)>=0&&Math.abs(n0(a.importe))>0.005)
+        out.push({concepto:a.concepto,importe:n0(a.importe),
+          sub:a.fecha?pref+fechaCorta(a.fecha):(mes?"":cap(m.mes)),cat:a.categoria});
+    });
+  });
+  return out;
 }
 
 /* ==========================================================================
@@ -656,7 +697,7 @@ window.DIN={
   repLineas:repLineas,repTotales:repTotales,
   excDe:excDe,bonoDe:bonoDe,netoDe:netoDe,cursoDe:cursoDe,mesObj:mesObj,
   mesesOrden:mesesOrden,anios:anios,filasPlan:filasPlan,ahorroPlan:ahorroPlan,
-  calcMes:calcMes,serieHucha:serieHucha,huchaMes:huchaMes,huchaSaldoTras:huchaSaldoTras,resumenAnio:resumenAnio,
+  calcMes:calcMes,serieHucha:serieHucha,huchaMes:huchaMes,huchaSaldoTras:huchaSaldoTras,resumenAnio:resumenAnio,desgloseCat:desgloseCat,
   abrirXlsx:abrirXlsx,csvApuntes:csvApuntes,csvResumen:csvResumen,tsvMes:tsvMes,
   leerZip:leerZip,inflar:inflar,
   hayDatos:hayDatos,V:V,
@@ -981,14 +1022,32 @@ function regla(partes){
       (p.t?' data-tip="'+e(p.t)+'"':'')+'></i>';
   }).join("")+'</div>';
 }
-function medidor(m){
+/* Lista de lo que compone una categoria: apuntes ordenados de mayor a menor, con total */
+function listaDesglose(items,vacio,max){
+  if(!items.length)return '<div class="desglose"><p class="hint">'+e(vacio)+'</p></div>';
+  items=items.slice().sort(function(a,b){return b.importe-a.importe;});
+  var tot=items.reduce(function(s,x){return s+x.importe;},0);
+  var vis=(max&&items.length>max)?items.slice(0,max):items,resto=items.slice(vis.length);
+  return '<div class="desglose">'+vis.map(function(x){
+      return '<div class="dg-row"><span class="dg-c">'+e(x.concepto)+(x.sub?'<small>'+e(x.sub)+'</small>':'')+'</span>'+
+        '<span class="dg-v">'+eur(x.importe)+'</span></div>';}).join("")+
+    (resto.length?'<div class="dg-row"><span class="dg-c hint">… y '+resto.length+' apuntes más</span>'+
+      '<span class="dg-v">'+eur(resto.reduce(function(s,x){return s+x.importe;},0))+'</span></div>':'')+
+    '<div class="dg-row dg-tot"><span>Total</span><span class="dg-v">'+eur(tot)+'</span></div></div>';
+}
+/* Medidor de presupuesto. Se toca para ver el desglose de lo que lo compone. */
+function medidor(m,C){
   var pres=n0(m.pres),gas=n0(m.gasto);
   var r=pres>0?gas/pres:(gas>0?1.5:0);
   var over=!m.bueno&&!m.hucha&&r>1.0001;
   var w=Math.min(100,r*100);
   var fill=cls("meter-fill",over?"over":"",m.hucha?"hucha":"");
   var restante=pres-gas;
-  return '<div><div class="meter-top"><b>'+e(m.nom)+'</b>'+
+  var abierto=V.desglose===m.k,des="";
+  if(abierto)des=listaDesglose(D.desgloseCat(m.cats||[],C.anio,C.mes),
+    "Nada anotado en "+m.nom.toLowerCase()+" este mes.");
+  return '<div class="tap" data-act="desglose" data-k="'+e(m.k)+'" title="Toca para ver el desglose">'+
+    '<div class="meter-top"><b>'+e(m.nom)+'</b><span class="chev'+(abierto?" open":"")+'">›</span>'+
     '<span class="m-v"><em>'+eur(gas)+'</em> / '+eur(pres)+'</span></div>'+
     '<div class="meter-track" data-tip="'+e(m.nom+": "+eur(gas)+" de "+eur(pres))+'">'+
       '<div class="'+fill+'" style="width:'+w.toFixed(2)+'%"></div>'+
@@ -997,7 +1056,7 @@ function medidor(m){
     '<div class="meter-foot"><span>'+(pres>0?D.pct(r):"—")+'</span>'+
     '<span class="'+(restante<-0.005&&!m.bueno?"over":"")+'">'+
       (restante>=0?"quedan "+eur(restante):(m.bueno?"de sobra "+eur(-restante):"te pasas "+eur(-restante)))+
-    '</span></div></div>';
+    '</span></div>'+des+'</div>';
 }
 
 /* Techo redondo para los ejes: 1 / 1,5 / 2 / 2,5 / 3 / 4 / 5 / 7,5 x10^n */
@@ -1067,28 +1126,40 @@ function graficoAhorro(R){
     '</svg><div class="bars-axis" style="padding:0 14px 0 46px">'+
     f.map(function(p){return '<span>'+cap(p.mes).slice(0,3)+'</span>';}).join("")+'</div></div>';
 }
-/* Gasto por categoria: magnitud -> un solo tono, con marca del previsto */
+/* Gasto por categoria: magnitud -> un solo tono, con marca del previsto.
+   Cada categoria se toca para ver los apuntes que la componen. */
 function graficoCats(R){
   var cs=R.cats.filter(function(c){return c.real>0.005||c.plan>0.005;});
   if(!cs.length)return '<p class="hint">Sin gasto registrado todavía.</p>';
   cs=cs.slice().sort(function(a,b){return b.real-a.real;});
   var max=Math.max.apply(null,cs.map(function(c){return Math.max(c.real,c.plan);}).concat([1]));
+  function des(c){
+    if(V.desgloseAnio!==c.cat)return "";
+    var items=D.desgloseCat([c.cat],R.anio,null,R.hasta);
+    return listaDesglose(items,"Nada anotado en "+cap(c.cat).toLowerCase()+(R.hasta?" hasta "+cap(R.hasta):" en "+R.anio)+".",25);
+  }
   if(V.tablaCat){
     return '<div class="tw"><table class="t mid"><thead><tr><th>Categoría</th>'+
       '<th class="n">Real</th><th class="n">Previsto</th><th class="n">Desviación</th></tr></thead><tbody>'+
-      cs.map(function(c){return '<tr><td>'+tag(c.cat)+'</td><td class="n">'+eur(c.real)+
-        '</td><td class="n">'+eur(c.plan)+'</td><td class="n">'+dev(c.real-c.plan)+'</td></tr>';}).join("")+
+      cs.map(function(c){
+        var d=des(c);
+        return '<tr class="tap" data-act="desglose-anio" data-cat="'+e(c.cat)+'"><td>'+tag(c.cat)+'</td><td class="n">'+eur(c.real)+
+          '</td><td class="n">'+eur(c.plan)+'</td><td class="n">'+dev(c.real-c.plan)+'</td></tr>'+
+          (d?'<tr><td colspan="4" style="padding-top:0">'+d+'</td></tr>':'');}).join("")+
       '</tbody></table></div>';
   }
   return '<div class="hbars">'+cs.map(function(c){
     var tip=c.cat+": real "+eur(c.real)+(c.plan>0?" · previsto "+eur(c.plan):"");
-    return '<div class="hbar" data-tip="'+e(tip)+'">'+
+    var d=des(c);
+    return '<div class="hbar tap'+(d?" open":"")+'" data-act="desglose-anio" data-cat="'+e(c.cat)+'" data-tip="'+e(tip)+'">'+
       '<div class="hb-l">'+e(cap(c.cat))+'</div>'+
       '<div class="hb-t"><div class="hb-f" style="width:'+(c.real/max*100).toFixed(2)+'%"></div>'+
         (c.plan>0.005?'<div class="hb-g" style="left:calc('+(c.plan/max*100).toFixed(2)+'% - 1px)"></div>':'')+
-      '</div><div class="hb-v">'+eur0(c.real)+'</div></div>';
+      '</div><div class="hb-v">'+eur0(c.real)+'</div></div>'+
+      (d?'<div class="hbar-des">'+d+'</div>':'');
   }).join("")+'</div>'+
-  '<div class="legend"><span><i class="a"></i>gasto real</span><span><i class="g"></i>previsto</span></div>';
+  '<div class="legend"><span><i class="a"></i>gasto real</span><span><i class="g"></i>previsto</span>'+
+  '<span class="hint-sm">toca una categoría para ver qué la compone</span></div>';
 }
 
 /* ------------------------------------------------------------ vista: MES */
@@ -1139,7 +1210,7 @@ function vistaMes(){
     '</tbody></table></div></div>';
 
   var presup='<div class="card card-pad"><div class="sechead"><h2>Cómo van los presupuestos</h2></div>'+
-    '<div class="meters">'+C.presup.map(medidor).join("")+'</div></div>';
+    '<div class="meters">'+C.presup.map(function(m){return medidor(m,C);}).join("")+'</div></div>';
 
   /* --- anotar + apuntes --- */
   var opts=D.CATS_APUNTE.map(function(c){return '<option value="'+e(c)+'">'+e(cap(c))+'</option>';}).join("");
@@ -1233,26 +1304,46 @@ function vistaMes(){
 }
 
 /* ------------------------------------------------------------ vista: ANO */
+/* Dos modos: "Hasta hoy" (lo real hasta el mes en curso, con el plan del resto del ano en
+   segundo plano) y "Ano completo" (los 12 meses, donde lo que no ha pasado sigue al plan). */
 function vistaAnio(){
   var ys=D.anios();
   if(!ys.length)return '<p class="hint">No hay datos.</p>';
   if(ys.indexOf(+V.anioVista)<0)V.anioVista=ys[0];
-  var R=D.resumenAnio(V.anioVista);
+  var hoy=new Date(),mesHoy=D.MESES[hoy.getMonth()],anioHoy=hoy.getFullYear();
+  var modo=V.anioModo||(+V.anioVista<=anioHoy?"ytd":"anual");
+  var hasta=null,avisoYtd="";
+  if(modo==="ytd")hasta=+V.anioVista<anioHoy?"DICIEMBRE":(+V.anioVista>anioHoy?null:mesHoy);
+  var R=D.resumenAnio(V.anioVista,hasta||undefined);
+  if(modo==="ytd"&&(!hasta||!R.filas.length)){
+    avisoYtd='<p class="hint" style="margin:-4px 0 14px">'+(+V.anioVista>anioHoy?
+      'Este año aún no ha empezado, así que se muestra el plan completo.':
+      'Todavía no hay meses de '+V.anioVista+' hasta hoy: se muestra el plan completo.')+'</p>';
+    R=D.resumenAnio(V.anioVista);modo="anual";
+  }
+  var ytd=modo==="ytd",hastaTxt=ytd?cap(R.hasta):"",quedan=ytd?R.resto.meses:0;
   var falta=R.objetivo-R.conseguidoReal;
 
   var cabecera='<div class="mespick"><h1>Año <i>'+R.anio+'</i></h1>'+
     '<select class="sel" data-act="anio-sel" aria-label="Elegir año">'+
     ys.map(function(y){return '<option value="'+y+'"'+(+y===+R.anio?" selected":"")+'>'+y+'</option>';}).join("")+
-    '</select></div>';
+    '</select></div>'+
+    '<div class="modo"><div class="seg" role="tablist">'+
+      '<button class="'+(ytd?"on":"")+'" data-act="anio-modo" data-modo="ytd">Hasta hoy</button>'+
+      '<button class="'+(ytd?"":"on")+'" data-act="anio-modo" data-modo="anual">Año completo</button></div>'+
+    '<span class="hint">'+(ytd?'lo real hasta '+hastaTxt+(quedan?' · el plan de los '+quedan+' meses que quedan, en segundo plano':''):
+      'los '+R.meses+' meses: lo que no ha pasado sigue al plan')+'</span></div>'+avisoYtd;
 
   var kpis='<div class="kpis-4">'+
-    kpi("Ingresos netos",eur0(R.tot.neto),null,R.meses+" mes"+(R.meses===1?"":"es")+" en el plan")+
-    kpi("Gastos reales",eur0(R.tot.gastoReal),null,"Previstos <b>"+eur0(R.tot.gastoPlan)+"</b>",
+    kpi("Ingresos netos",eur0(R.tot.neto),null,R.meses+" mes"+(R.meses===1?"":"es")+(ytd?" hasta "+hastaTxt:" en el plan"))+
+    kpi("Gastos reales",eur0(R.tot.gastoReal),null,"Previstos <b>"+eur0(R.tot.gastoPlan)+"</b>"+
+      (ytd&&quedan?" · quedan <b>"+eur0(R.resto.gastoPlan)+"</b> de plan":""),
       regla([{v:Math.min(R.tot.gastoReal,R.tot.gastoPlan),c:"a"},
              {v:Math.max(0,R.tot.gastoReal-R.tot.gastoPlan),c:"x"},
              {v:Math.max(0,R.tot.gastoPlan-R.tot.gastoReal),c:"g"}]))+
     kpi("Ahorro acumulado",eur0(R.conseguidoReal),R.conseguidoReal>=R.objetivo?"pos":null,
-      "Objetivo <b>"+eur0(R.objetivo)+"</b>",
+      (ytd?"Objetivo hasta "+hastaTxt+" <b>"+eur0(R.objetivo)+"</b> · año <b>"+eur0(R.objetivoAnual)+"</b>":
+           "Objetivo <b>"+eur0(R.objetivo)+"</b>"),
       regla([{v:Math.min(R.conseguidoReal,R.objetivo),c:"a"},
              {v:Math.max(0,R.objetivo-R.conseguidoReal),c:"g"}]))+
     kpi("Balance acumulado",eur0S(R.tot.balanceReal),R.tot.balanceReal>=0?"pos":"neg",
@@ -1262,7 +1353,7 @@ function vistaAnio(){
   var gBal='<div class="card card-pad"><div class="sechead"><h2>Balance de cada mes</h2>'+
     '<span class="right">lo que queda tras gastos y ahorro</span></div>'+graficoBalance(R)+'</div>';
   var gAho='<div class="card card-pad"><div class="sechead"><h2>Ahorro acumulado</h2>'+
-    '<span class="right">frente al objetivo de '+eur0(R.objetivo)+'</span></div>'+graficoAhorro(R)+'</div>';
+    '<span class="right">frente al objetivo'+(ytd?' hasta '+hastaTxt:'')+' de '+eur0(R.objetivo)+'</span></div>'+graficoAhorro(R)+'</div>';
 
   var tabla='<div class="card card-pad"><div class="sechead"><h2>Mes a mes</h2>'+
     '<span class="right"><button class="btn btn-sm" data-act="exp-csv-resumen">Descargar CSV</button></span></div>'+
@@ -1277,10 +1368,14 @@ function vistaAnio(){
         '<td class="n '+(f.balanceReal>=0?"pos":"neg")+'">'+eur0S(f.balanceReal)+'</td>'+
         '<td class="n">'+eur0(f.acum)+'</td></tr>';
     }).join("")+
-    '<tr class="sum"><td>Total '+R.anio+'</td><td class="n">'+eur0(R.tot.neto)+'</td>'+
+    '<tr class="sum"><td>Total '+(ytd?'hasta '+hastaTxt:R.anio)+'</td><td class="n">'+eur0(R.tot.neto)+'</td>'+
     '<td class="n">'+eur0(R.tot.gastoPlan)+'</td><td class="n">'+eur0(R.tot.gastoReal)+'</td>'+
     '<td class="n">'+eur0(R.tot.ahoReal)+'</td><td class="n">'+eur0S(R.tot.balanceReal)+'</td>'+
     '<td class="n">'+eur0(R.conseguidoReal)+'</td></tr>'+
+    (ytd&&quedan?'<tr class="sub"><td class="c-name">Resto del año<small>'+quedan+' mes'+(quedan===1?"":"es")+' según el plan</small></td>'+
+      '<td class="n">'+eur0(R.resto.neto)+'</td><td class="n">'+eur0(R.resto.gastoPlan)+'</td><td class="n zero">—</td>'+
+      '<td class="n">'+eur0(R.resto.ahoPlan)+'</td><td class="n">'+eur0S(R.resto.balancePlan)+'</td>'+
+      '<td class="n">'+eur0(R.conseguidoReal+R.resto.ahoPlan)+'</td></tr>':'')+
     '</tbody></table></div></div>';
 
   var cats='<div class="card card-pad"><div class="sechead"><h2>En qué se va el dinero</h2>'+
@@ -1313,21 +1408,32 @@ function vistaAnio(){
     '</div>';
 
   var mensual=R.conseguidoReal-R.bono;
+  var prevision=R.conseguidoReal+R.resto.ahoPlan,faltaAnual=R.objetivoAnual-prevision;
+  /* en "hasta hoy" la hucha que cuenta para el cierre es la prevista a fin de ano, no la de hoy */
+  var huchaFin=ytd?D.resumenAnio(V.anioVista).saldoFin:R.saldoFin;
   var cierre='<div class="card card-pad"><div class="sechead"><h2>¿Llegas al objetivo?</h2></div>'+
     '<div class="tw"><table class="t"><tbody>'+
-    '<tr><td class="c-name">Ahorro de las mensualidades</td><td class="n">'+eur(mensual)+'</td></tr>'+
+    '<tr><td class="c-name">Ahorro de las mensualidades'+(ytd?' hasta '+hastaTxt:'')+'</td><td class="n">'+eur(mensual)+'</td></tr>'+
     (R.bono>0?'<tr><td class="c-name">Bono anual<small>va directo a inversión, no toca el mes</small></td>'+
       '<td class="n">'+eur(R.bono)+'</td></tr>':'')+
-    '<tr class="sum"><td>Ahorrado en '+R.anio+'</td><td class="n">'+eur(R.conseguidoReal)+'</td></tr>'+
-    '<tr class="sub"><td class="c-name">Objetivo del año<small>'+R.meses+' × '+eur0(n0(D.S.config.ahorroObjetivo))+' al mes</small></td>'+
+    '<tr class="sum"><td>Ahorrado '+(ytd?'hasta '+hastaTxt:'en '+R.anio)+'</td><td class="n">'+eur(R.conseguidoReal)+'</td></tr>'+
+    '<tr class="sub"><td class="c-name">Objetivo'+(ytd?' hasta '+hastaTxt:' del año')+'<small>'+R.meses+' × '+eur0(n0(D.S.config.ahorroObjetivo))+' al mes</small></td>'+
       '<td class="n">'+eur(R.objetivo)+'</td></tr>'+
     '<tr><td class="c-name">'+(falta>0?"Te falta":"Vas por delante")+'</td><td class="n '+(falta>0?"neg":"pos")+'">'+
       eur(Math.abs(falta))+'</td></tr>'+
-    '<tr class="sub"><td class="c-name">Saldo de la hucha a fin de año<small>no es patrimonio, pero está ahí</small></td>'+
+    (ytd&&quedan?'<tr class="sub"><td class="c-name">Previsión a fin de año<small>si los '+quedan+' meses que quedan van según el plan ('+
+        eur0(R.resto.ahoPlan)+' más)</small></td><td class="n">'+eur(prevision)+'</td></tr>'+
+      '<tr class="sub"><td class="c-name">Objetivo del año<small>'+R.mesesAnio+' × '+eur0(n0(D.S.config.ahorroObjetivo))+' al mes</small></td>'+
+        '<td class="n">'+eur(R.objetivoAnual)+'</td></tr>':'')+
+    '<tr class="sub"><td class="c-name">Saldo de la hucha'+(ytd?' hasta '+hastaTxt:' a fin de año')+'<small>no es patrimonio, pero está ahí</small></td>'+
       '<td class="n">'+eur(R.saldoFin)+'</td></tr>'+
-    '<tr class="sum"><td>Contando también la hucha</td><td class="n '+
-      ((falta-R.saldoFin)<=0?"pos":"neg")+'">'+
-      ((falta-R.saldoFin)<=0?"objetivo cubierto":"faltarían "+eur(falta-R.saldoFin))+'</td></tr>'+
+    (ytd&&quedan?
+      '<tr class="sum"><td>A fin de año, contando también la hucha<small>hucha prevista a fin de año: '+eur(huchaFin)+'</small></td><td class="n '+
+        ((faltaAnual-huchaFin)<=0?"pos":"neg")+'">'+
+        ((faltaAnual-huchaFin)<=0?"objetivo cubierto":"faltarían "+eur(faltaAnual-huchaFin))+'</td></tr>':
+      '<tr class="sum"><td>Contando también la hucha</td><td class="n '+
+        ((falta-R.saldoFin)<=0?"pos":"neg")+'">'+
+        ((falta-R.saldoFin)<=0?"objetivo cubierto":"faltarían "+eur(falta-R.saldoFin))+'</td></tr>')+
     '</tbody></table></div></div>';
 
   return cabecera+kpis+'<div class="stack-lg" style="margin-top:20px">'+
@@ -1588,7 +1694,7 @@ var D=window.DIN,U=window.DINV1,U2=window.DINV2,V=D.V;
 var e=D.esc,eur=D.eur,eur0=D.eur0,cap=D.cap,n0=D.n0;
 var kpi=U.kpi,regla=U.regla,num2=U.num2;
 
-var VERSION="f947ee2";
+var VERSION="cb3e9d4";
 var LSK="dineritos.estado.v2";     /* el estado de trabajo */
 var LSC="dineritos.cuenta.v2";     /* clientId, sesion y fichero elegido */
 var LSB="dineritos.base.v2";       /* copia de lo ultimo leido del Excel */
@@ -2346,6 +2452,12 @@ function onClick(ev){
       V.mes=t.getAttribute("data-mes");V.anio=+t.getAttribute("data-anio");V.tab="mes";
       pintar();window.scrollTo(0,0);break;
     case "tabla-cat": V.tablaCat=!V.tablaCat;pintar();break;
+    /* desglose de una categoria: en Mes por medidor, en Ano por categoria */
+    case "desglose":
+      var dk=t.getAttribute("data-k");V.desglose=(V.desglose===dk?null:dk);pintar();break;
+    case "desglose-anio":
+      var dc=t.getAttribute("data-cat");V.desgloseAnio=(V.desgloseAnio===dc?null:dc);pintar();break;
+    case "anio-modo": V.anioModo=t.getAttribute("data-modo");pintar();break;
     case "cerrar": cerrarHoja();break;
     case "fab":
       var f=document.querySelector('form[data-act="add-apunte"]');
